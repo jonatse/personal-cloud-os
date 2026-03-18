@@ -1,0 +1,19 @@
+# Personal Cloud OS - Dependencies
+
+# Core
+python >= 3.10
+
+# Networking
+zeroconf >= 0.39.0
+
+# Reticulum - ZeroTrust networking stack (embedded, no daemon needed)
+rns >= 0.5.0
+
+# Async
+aiohttp >= 3.9.0
+
+# Configuration
+PyYAML >= 6.0
+
+# Logging
+colorlog >= 6.8.0
