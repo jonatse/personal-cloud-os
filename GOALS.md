@@ -31,13 +31,18 @@ This document tracks what we are currently WORKING ON and what needs to be done 
   - Bug: Threading issue - `asyncio.create_task` called from non-async context
   - Add missing `reticulum` config section
 
-- [ ] **P1.2**: Ensure both devices can see each other on local network
+- [x] **P1.2**: Ensure both devices can see each other on local network
   - Both devices run app with Reticulum
   - Peer discovery shows both devices
 
 - [ ] **P1.3**: Verify network connectivity between devices
   - Can establish encrypted link between devices
   - Can send/receive test messages
+
+- [ ] **P1.4**: Enable phone/Sideband connectivity (via Tailscale TCP)
+  - Add TCPInterface to rnsd config for remote connections
+  - Sideband on phone can connect via Tailscale IP
+  - Allows phone to be part of Personal Cloud OS network
 
 ### CRITICAL: Self-Contained Container (NEW - HIGH PRIORITY)
 **Goal**: Container functionality must be self-contained within the app
@@ -103,13 +108,14 @@ This document tracks what we are currently WORKING ON and what needs to be done 
 
 - **Phase**: 1 (Networking Foundation)
 - **P1.1**: Complete (bugs fixed)
-- Need to test
+- **P1.2**: Complete - desktop and laptop see each other
+- Note: Phone connectivity via Sideband/Tailscale is a future consideration (P1.4)
 - **CRITICAL**: Self-Contained Container is now HIGH PRIORITY (P0.x)
   - Must remove Docker dependency before proceeding with container feature
   - Research and implement self-contained solution
 
 ## Next Steps
 
-1. [IN PROGRESS] Test peer discovery on both devices
-2. Verify network connectivity between devices
+1. Complete P1.3: Verify network connectivity between devices
+2. Work on P1.4: Enable phone/Sideband connectivity
 3. Continue to Phase 2: User Identity Management
