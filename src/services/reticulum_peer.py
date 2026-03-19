@@ -204,21 +204,36 @@ class ReticulumPeerService:
                 logger.debug("Transport.get_interfaces not available in this Reticulum version")
         except Exception as e:
             logger.debug(f"Could not get interfaces: {e}")
-        
+
         # Add AutoInterface for local network peer discovery
         # This enables LAN peer discovery via broadcast
         logger.info("Checking for AutoInterface support...")
         if hasattr(RNS.Interfaces, 'AutoInterface'):
+            from RNS.Interfaces.AutoInterface import AutoInterface
             try:
-                import RNS.Interfaces.AutoInterface as AutoInterfaceModule
-                auto_iface = AutoInterfaceModule.AutoInterface()
+                # Create a basic configuration for AutoInterface
+                # Based on the class defaults we saw earlier
+                config = {
+                    'peer_announce_interval': AutoInterface.ANNOUNCE_INTERVAL,
+                    'announce_interval': AutoInterface.ANNOUNCE_INTERVAL,
+                    'ignore_interfaces': AutoInterface.ALL_IGNORE_IFS,
+                    'data_port': AutoInterface.DEFAULT_DATA_PORT,
+                    'discovery_port': AutoInterface.DEFAULT_DISCOVERY_PORT,
+                    'group_id': AutoInterface.DEFAULT_GROUP_ID,
+                    'ifac_size': AutoInterface.DEFAULT_IFAC_SIZE,
+                    'hw_mtu': AutoInterface.HW_MTU,
+                    'fixed_mtu': AutoInterface.FIXED_MTU,
+                }
+                auto_iface = AutoInterface(self._reticulum, config)
                 logger.info(f"AutoInterface added successfully: {auto_iface.name}")
-                # Also try to register it with Transport
+                # Register with Transport if needed
                 if hasattr(RNS.Transport, 'register_interface'):
                     RNS.Transport.register_interface(auto_iface)
                     logger.info("AutoInterface registered with Transport")
             except Exception as e:
                 logger.warning(f"Failed to add AutoInterface: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
         else:
             logger.warning("AutoInterface not available in this Reticulum version")
             logger.info("Reticulum version: " + str(dir(RNS))[:200])
