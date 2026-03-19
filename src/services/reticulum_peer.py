@@ -193,9 +193,9 @@ class ReticulumPeerService:
         # Add AutoInterface for local network peer discovery
         # This enables LAN peer discovery via broadcast
         logger.info("Checking for AutoInterface support...")
-        if hasattr(RNS, 'AutoInterface'):
+        if hasattr(RNS.Interfaces, 'AutoInterface'):
             try:
-                auto_iface = RNS.AutoInterface()
+                auto_iface = RNS.Interfaces.AutoInterface()
                 logger.info(f"AutoInterface added successfully: {auto_iface.name}")
                 # Also try to register it with Transport
                 if hasattr(RNS.Transport, 'register_interface'):
