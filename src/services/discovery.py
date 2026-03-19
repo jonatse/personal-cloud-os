@@ -95,22 +95,29 @@ class PeerDiscoveryService:
     
     async def _on_peer_discovered(self, event):
         """Handle peer discovered event from Reticulum."""
-        logger.info(f"[DEBUG] _on_peer_discovered called with event: {event}")
-        data = event.data
-        logger.info(f"[DEBUG] event data: {data}")
-        peer = Peer(
-            id=data.get("id", ""),
-            name=data.get("name", "Unknown"),
-            last_seen=datetime.fromisoformat(data.get("last_seen", datetime.now().isoformat())),
-            status="online",
-            metadata=data.get("metadata", {})
-        )
-        
-        self._peers[peer.id] = peer
-        logger.info(f"Peer discovered: {peer.name}")
-        
-        # Publish to our event bus
-        await self.event_bus.publish(type="discovery.peer_found", data=peer.to_dict(), source="discovery")
+        try:
+            logger.info(f"[DEBUG] _on_peer_discovered called with event: {event}")
+            data = event.data
+            logger.info(f"[DEBUG] event data: {data}")
+            peer = Peer(
+                id=data.get("id", ""),
+                name=data.get("name", "Unknown"),
+                last_seen=datetime.fromisoformat(data.get("last_seen", datetime.now().isoformat())),
+                status="online",
+                metadata=data.get("metadata", {})
+            )
+            
+            logger.info(f"[DEBUG] Adding peer {peer.id} to _peers dict")
+            self._peers[peer.id] = peer
+            logger.info(f"[DEBUG] _peers now has {len(self._peers)} items: {list(self._peers.keys())}")
+            logger.info(f"Peer discovered: {peer.name}")
+            
+            # Publish to our event bus
+            await self.event_bus.publish(type="discovery.peer_found", data=peer.to_dict(), source="discovery")
+        except Exception as e:
+            logger.error(f"[DEBUG] Exception in _on_peer_discovered: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
     
     async def _on_peer_updated(self, event):
         """Handle peer updated event from Reticulum."""
