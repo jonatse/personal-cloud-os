@@ -13,6 +13,7 @@ from core.config import Config
 from core.events import Event, Events, event_bus
 from core.logger import setup_logging, get_logger
 from core.device_manager import DeviceManager
+from core.version import __version__, __app_name__
 from services.reticulum_peer import ReticulumPeerService
 from services.discovery import PeerDiscoveryService
 from services.peer_link import PeerLinkService
@@ -51,6 +52,7 @@ class PersonalCloudOS:
         
         logger.info("=" * 60)
         logger.info("Personal Cloud OS Starting...")
+        logger.info(f"Version: {__version__}")
         logger.info("=" * 60)
         
         # Initialize Reticulum peer service (core networking)
@@ -189,6 +191,12 @@ class PersonalCloudOS:
     
     def run(self):
         """Run the application."""
+        # Clear old logs if bigger than 1MB
+        log_file = os.path.expanduser("~/.local/share/pcos/logs/app.log")
+        if os.path.exists(log_file) and os.path.getsize(log_file) > 1024*1024:
+            logger.info("Log file too large, truncating...")
+            open(log_file, 'w').close()
+        
         # Create event loop
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)

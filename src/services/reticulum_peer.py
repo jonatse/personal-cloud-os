@@ -288,7 +288,7 @@ class ReticulumPeerService:
                 except:
                     peer_name = str(app_data)[:20]
             
-            logger.info(f"Received announce from: {peer_name} ({peer_hash[:16]}...)")
+            logger.debug(f"Received announce from: {peer_name} ({peer_hash[:16]}...)")
             
             # Don't respond to ourselves
             if peer_hash == self._destination_hash:
@@ -308,7 +308,7 @@ class ReticulumPeerService:
                 self._peers[peer_hash] = peer
                 
                 if is_new:
-                    logger.info(f"NEW PEER DISCOVERED: {peer_name} ({peer_hash[:16]}...)")
+                    logger.info(f"Discovered peer: {peer_name} ({peer_hash[:16]}...)")
                     asyncio.run_coroutine_threadsafe(
                         self._publish_event("peer.discovered", peer.to_dict()),
                         self._event_loop

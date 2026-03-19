@@ -35,7 +35,7 @@ class CLIInterface:
                     result = self.command_handler.execute(cmd)
                     if not result:
                         break
-                    # Print compact status after each command
+                    # Print enhanced status after each command
                     print()
                     self._print_status_bar()
                     
@@ -62,22 +62,119 @@ class CLIInterface:
         print("=" * 50 + "\n")
     
     def _print_status_bar(self):
-        """Print compact status bar."""
-        # Get peer count
+        """Print enhanced status bar with device, peers, and network info."""
+        import socket
+        import subprocess
+        
+        # Get services
         discovery = getattr(self.app, 'discovery_service', None)
         ret_service = getattr(self.app, 'reticulum_service', None)
+        device_mgr = getattr(self.app, 'device_manager', None)
         
+        # ========== DEVICE INFO ==========
+        hostname = socket.gethostname()
+        
+        device_id = "Unknown"
+        mac = "Unknown"
+        if device_mgr:
+            device_id = getattr(device_mgr, 'device_id', 'Unknown')
+            mac = getattr(device_mgr, 'mac', 'Unknown')
+        
+        # ========== RETICULUM INFO ==========
+        ret_identity = "Unknown"
+        ret_dest = "Unknown"
+        if ret_service:
+            if hasattr(ret_service, '_identity_hash'):
+                ret_identity = ret_service._identity_hash[:16] + "..."
+            if hasattr(ret_service, '_destination_hash'):
+                ret_dest = ret_service._destination_hash[:16] + "..."
+        
+        # ========== PEERS ==========
+        peers = []
         peer_count = 0
-        if discovery:
-            peer_count = len(discovery.get_peers()) if hasattr(discovery, 'get_peers') else 0
+        peer_count_raw = 0
+        if discovery and hasattr(discovery, 'get_peers'):
+            try:
+                peers = discovery.get_peers()
+                peer_count_raw = len(peers)
+                peer_count = peer_count_raw
+            except Exception as e:
+                peer_count = f"Error: {e}"
         
-        identity = "Unknown"
-        if ret_service and hasattr(ret_service, '_identity_hash'):
-            identity = ret_service._identity_hash[:12] + "..."
+        # ========== NETWORKS - USED BY RETICULUM ==========
+        # Query rnsd for active interfaces
+        used_networks = []
+        try:
+            result = subprocess.run(
+                ["python3", "-c", """
+import RNS, time
+r = RNS.Reticulum.from_storage()
+time.sleep(0.5)
+for i in RNS.Transport.interfaces:
+    print(f"{i.name}|{type(i).__name__}|{getattr(i, 'online', False)}")
+"""],
+                capture_output=True, text=True, timeout=5
+            )
+            for line in result.stdout.strip().split('\n'):
+                if line:
+                    parts = line.split('|')
+                    if len(parts) >= 3:
+                        name, itype, online = parts
+                        status = "ONLINE" if online == "True" else "offline"
+                        used_networks.append(f"{name} ({itype.split('.')[-1]}) [{status}]")
+        except Exception as e:
+            used_networks.append(f"Query error: {e}")
         
-        print("─" * 50)
-        print(f"  Reticulum: {identity} | Peers: {peer_count} | Press Enter to refresh")
-        print("─" * 50)
+        # ========== ALL NETWORK HARDWARE ==========
+        # Get all network interfaces from system
+        all_networks = []
+        try:
+            import psutil
+            for iface, addrs in psutil.net_if_addrs().items():
+                if iface != 'lo':
+                    ipv4 = ""
+                    for addr in addrs:
+                        if addr.family == 2:  # AF_INET
+                            ipv4 = addr.address
+                            break
+                    # Check if used by Reticulum
+                    used = any(iface in net for net in used_networks)
+                    status = "USED" if used else "unused"
+                    all_networks.append(f"{iface}: {ipv4} [{status}]")
+        except Exception as e:
+            all_networks.append(f"Error: {e}")
+        
+        # ========== PRINT STATUS ==========
+        width = 60
+        print("═" * width)
+        print(f"  DEVICE: {hostname}")
+        print(f"    MAC: {mac}")
+        print(f"    Device ID: {device_id}")
+        print("═" * width)
+        print(f"  RETICULUM:")
+        print(f"    Identity: {ret_identity}")
+        print(f"    Destination: {ret_dest}")
+        print("═" * width)
+        print(f"  PEERS: {peer_count} connected")
+        for peer in peers[:5]:
+            print(f"    • {peer.name}")
+        if peer_count_raw > 5:
+            print(f"    (+{peer_count_raw - 5} more)")
+        if peer_count == 0:
+            print(f"    (waiting for peers...)")
+        print("═" * width)
+        print(f"  NETWORKS USED BY RETICULUM:")
+        for net in used_networks:
+            print(f"    • {net}")
+        if not used_networks:
+            print(f"    (none detected)")
+        print("═" * width)
+        print(f"  ALL NETWORK HARDWARE:")
+        for net in all_networks:
+            print(f"    • {net}")
+        print("═" * width)
+        print(f"  [Enter to refresh, exit to close CLI]")
+        print("═" * width)
     
     def stop(self):
         """Stop the CLI."""

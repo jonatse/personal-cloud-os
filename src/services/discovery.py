@@ -95,7 +95,9 @@ class PeerDiscoveryService:
     
     async def _on_peer_discovered(self, event):
         """Handle peer discovered event from Reticulum."""
+        logger.info(f"[DEBUG] _on_peer_discovered called with event: {event}")
         data = event.data
+        logger.info(f"[DEBUG] event data: {data}")
         peer = Peer(
             id=data.get("id", ""),
             name=data.get("name", "Unknown"),
@@ -180,7 +182,27 @@ class PeerDiscoveryService:
     
     def get_peers(self) -> List[Peer]:
         """Get list of currently discovered peers."""
-        return list(self._peers.values())
+        logger.info(f"[DEBUG] get_peers called, internal _peers has {len(self._peers)} items: {list(self._peers.keys())}")
+        peers = list(self._peers.values())
+        
+        if self._reticulum_service:
+            try:
+                ret_peers = self._reticulum_service.get_peers()
+                for ret_peer in ret_peers:
+                    if ret_peer.id not in self._peers:
+                        peer = Peer(
+                            id=ret_peer.id,
+                            name=ret_peer.name,
+                            last_seen=ret_peer.last_seen,
+                            status="online",
+                            metadata=ret_peer.metadata
+                        )
+                        self._peers[ret_peer.id] = peer
+                peers = list(self._peers.values())
+            except Exception as e:
+                logger.debug(f"Error getting peers from reticulum: {e}")
+        
+        return peers
     
     def get_peer(self, peer_id: str) -> Optional[Peer]:
         """Get a specific peer by ID."""
