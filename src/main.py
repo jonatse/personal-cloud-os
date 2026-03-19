@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from core.config import Config
 from core.events import Event, Events, event_bus
 from core.logger import setup_logging, get_logger
+from core.device_manager import DeviceManager
 from services.reticulum_peer import ReticulumPeerService
 from services.discovery import PeerDiscoveryService
 from services.peer_link import PeerLinkService
@@ -40,6 +41,10 @@ class PersonalCloudOS:
             level="DEBUG" if self.config.get("app.debug") else "INFO",
             log_file=os.path.expanduser("~/.local/share/pcos/logs/app.log")
         )
+        
+        # Initialize device manager - fingerprints this device and registers in inventory
+        self.device_manager = DeviceManager()
+        self.device_manager.register_self()
         
         # CLI mode flag
         self.cli_mode = cli_mode

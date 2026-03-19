@@ -1,16 +1,52 @@
 {
   "devices": {
-    "desktop": {
+    "debian": {
       "name": "Desktop",
-      "hostname": "desktop",
+      "hostname": "debian",
+      "device_id": "12d0d150d2465cea",
+      "mac": "60452ede5053",
       "is_local": true,
       "ssh": null,
       "project_path": "/home/jonathan/project",
-      "last_updated": "2026-03-19T00:00:00Z"
+      "identity_path": "/home/jonathan/.reticulum/storage/identities/pcos_de5053",
+      "hardware": {
+        "cpu_cores": 30,
+        "platform": "x86_64",
+        "os": "Linux",
+        "os_version": "#1 SMP PREEMPT_DYNAMIC Debian 6.12.63-1 (2025-12-30)",
+        "ram_total_gb": 125.6,
+        "gpus": [
+          {
+            "name": "NVIDIA GeForce RTX 4080 SUPER",
+            "vram": "16376 MiB"
+          }
+        ]
+      },
+      "network": {
+        "ip_addresses": [],
+        "hostname": "debian",
+        "interfaces": {
+          "lo": [
+            "127.0.0.1"
+          ],
+          "wlo1": [
+            "192.168.1.109"
+          ],
+          "br0": [
+            "192.168.1.250"
+          ],
+          "tailscale0": [
+            "100.110.227.7"
+          ]
+        }
+      },
+      "last_updated": "2026-03-19T19:30:27.481191+00:00"
     },
     "laptop": {
       "name": "Laptop",
-      "hostname": "laptop",
+      "hostname": "pop-osmark",
+      "device_id": "",
+      "mac": "",
       "is_local": false,
       "ssh": {
         "user": "jonathansoberg",
@@ -19,6 +55,9 @@
         "password": "1221"
       },
       "project_path": "~/Projects/personal-cloud-os/",
+      "identity_path": "",
+      "hardware": {},
+      "network": {},
       "last_updated": "2026-03-19T00:00:00Z"
     }
   }

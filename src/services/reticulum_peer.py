@@ -94,9 +94,11 @@ class ReticulumPeerService:
         self._running = False
         self._announce_interval = config.get("reticulum.announce_interval", 30)
         
-        # User identity settings
-        self._identity_path = os.path.expanduser(
-            config.get("reticulum.identity_path", "~/.reticulum/storage/identities/pcos")
+        # Use device-specific identity path from DeviceManager if available
+        # Falls back to config, then default
+        self._identity_path = config.get(
+            "reticulum.identity_path",
+            os.path.expanduser("~/.reticulum/storage/identities/pcos")
         )
         self._user_name = config.get("app.name", "PersonalCloudOS")
         
@@ -121,6 +123,19 @@ class ReticulumPeerService:
         self._event_loop = asyncio.get_event_loop()
         
         try:
+            # Use device-specific identity if DeviceManager is available via app
+            try:
+                from core.device_manager import DeviceManager
+                dm = DeviceManager()
+                device = dm.get_my_device()
+                if device and device.get("identity_path"):
+                    self._identity_path = device["identity_path"]
+                    logger.info(f"Using device-specific identity path: {self._identity_path}")
+                else:
+                    logger.info(f"No device-specific identity in inventory, using: {self._identity_path}")
+            except Exception as e:
+                logger.warning(f"Could not load DeviceManager, using default identity path: {e}")
+
             # Initialize Reticulum network stack
             await self._init_reticulum()
             
