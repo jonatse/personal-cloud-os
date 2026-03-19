@@ -103,6 +103,9 @@ class ReticulumPeerService:
         # Callbacks
         self._peer_callbacks: List[Callable] = []
         
+        # Event loop reference for thread-safe scheduling
+        self._event_loop = None
+        
         logger.info("ReticulumPeerService initialized")
     
     async def start(self):
@@ -113,6 +116,9 @@ class ReticulumPeerService:
         
         logger.info("Starting Reticulum peer service...")
         self._running = True
+        
+        # Store event loop reference for thread-safe scheduling
+        self._event_loop = asyncio.get_event_loop()
         
         try:
             # Initialize Reticulum network stack
@@ -269,7 +275,7 @@ class ReticulumPeerService:
                 peer = ReticulumPeer(
                     id=peer_hash,
                     name=peer_name,
-                    destination=destination,
+                    destination=announced_destination,
                     status=PeerStatus.DISCOVERED,
                     last_seen=datetime.now(),
                     metadata=app_data or {}
@@ -279,10 +285,16 @@ class ReticulumPeerService:
                 
                 if is_new:
                     logger.info(f"Discovered Reticulum peer: {peer_name} ({peer_hash[:16]}...)")
-                    asyncio.create_task(self._publish_event("peer.discovered", peer.to_dict()))
+                    asyncio.run_coroutine_threadsafe(
+                        self._publish_event("peer.discovered", peer.to_dict()),
+                        self._event_loop
+                    )
                 else:
                     # Update last seen
-                    asyncio.create_task(self._publish_event("peer.updated", peer.to_dict()))
+                    asyncio.run_coroutine_threadsafe(
+                        self._publish_event("peer.updated", peer.to_dict()),
+                        self._event_loop
+                    )
                     
         except Exception as e:
             logger.error(f"Error handling announce: {e}")

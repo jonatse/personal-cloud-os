@@ -14,6 +14,11 @@ class Config:
             "version": "0.1.0",
             "debug": False
         },
+        "reticulum": {
+            "identity_path": "~/.reticulum/storage/identities/pcos",
+            "announce_interval": 30,
+            "share_instance": True
+        },
         "discovery": {
             "enabled": True,
             "port": 45678,

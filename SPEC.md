@@ -1,5 +1,10 @@
 # Personal Cloud OS - Design Requirements
 
+## Document Purpose
+
+**SPEC.md** - Design specification (what we ARE building)
+**GOALS.md** - Priority tracking (what we are WORKING ON now)
+
 ## Core Principles
 
 1. **Zero Configuration** - Works automatically once installed
@@ -27,30 +32,76 @@
 - **FR2.4**: Unique device identity for each device
 - **FR2.5**: Displays peer status (online/offline, connection quality)
 
-### FR3: File Sync
-- **FR3.1**: Automatically syncs files between discovered peers
-- **FR3.2**: End-to-end encrypted transfers
-- **FR3.3**: Conflict detection and resolution
-- **FR3.4**: Configurable sync directories
+### FR3: Device Inventory
+- **FR3.1**: Automatic hardware detection on startup
+  - CPU (cores, speed, architecture)
+  - RAM (total, available)
+  - GPU (graphics cards, capabilities)
+  - Audio devices (input/output)
+  - Video devices (cameras, displays)
+- **FR3.2**: Network interface discovery
+  - IP addresses (IPv4, IPv6)
+  - Network names/SSIDs
+  - Connection types (WiFi, ethernet, etc.)
+- **FR3.3**: Device credential storage
+  - Username for this device
+  - SSH credentials (password/key)
+  - Used for authentication between devices
+- **FR3.4**: Device registry (shared across user's devices)
+  - List of all devices owned by user
+  - Each device's hardware capabilities
+  - Network information
+  - App installation path on each device
+- **FR3.5**: App location tracking
+  - Path to app installation directory on this device
+  - Used for remote management and locating app files
+  - Can be queried via CLI for troubleshooting
 
-### FR4: Container Environment
-- **FR4.1**: Runs Alpine Linux container in background
-- **FR4.2**: Accessible via SSH from CLI interface
-- **FR4.3**: Persistent storage for user files
-- **FR4.4**: SSH daemon running in container
+### FR4: File Sync
+- **FR4.1**: Automatically syncs files between discovered peers
+- **FR4.2**: End-to-end encrypted transfers
+- **FR4.3**: Conflict detection and resolution
+- **FR4.4**: Configurable sync directories
 
-### FR5: CLI Management Interface
-- **FR5.1**: Interactive CLI with menu-driven interface
-- **FR5.2**: Commands: status, peers, sync, device, network, help, exit
-- **FR5.3**: Colored output for readability
-- **FR5.4**: Tab completion for commands
-- **FR5.5**: Real-time status updates
+### FR5: Resource Sharing
+- **FR5.1**: Share CPU resources with virtual environment
+- **FR5.2**: Share RAM with virtual environment  
+- **FR5.3**: Share GPU compute with virtual environment
+- **FR5.4**: Share audio devices (input/output)
+- **FR5.5**: Share video devices (cameras, displays)
+- **FR5.6**: Network bridging to virtual environment
+- **FR5.7**: GPU passthrough for graphics acceleration
 
-### FR6: Self-Contained Packaging
-- **FR6.1**: Single executable or self-contained directory
-- **FR6.2**: Includes all Python dependencies
-- **FR6.3**: Includes Reticulum binaries if needed
-- **FR6.4**: Works without internet after initial install
+### FR6: Session State Persistence
+- **FR6.1**: Terminal session state preservation
+  - Command history preserved across devices
+  - Working directory preserved
+  - Environment variables preserved
+- **FR6.2**: Application state preservation
+  - GUI apps stay open when switching devices
+  - App state (windows, documents) persisted
+- **FR6.3**: Seamless resume on different device
+  - User continues work exactly where left off
+  - No manual reconnection needed
+
+### FR7: Container Environment
+- **FR7.1**: Runs Alpine Linux container in background
+- **FR7.2**: Accessible via SSH from CLI interface
+- **FR7.3**: Persistent storage for user files
+- **FR7.4**: SSH daemon running in container
+
+### FR8: CLI Management Interface
+- **FR8.1**: Interactive CLI with menu-driven interface
+- **FR8.2**: Commands: status, peers, sync, device, network, help, exit
+- **FR8.3**: Colored output for readability
+- **FR8.4**: Tab completion for commands
+- **FR8.5**: Real-time status updates
+
+### FR9: Self-Contained Packaging
+- **FR9.1**: Single executable or self-contained directory
+- **FR9.2**: Includes all Python dependencies
+- **FR9.3**: Includes Reticulum binaries if needed
+- **FR9.4**: Works without internet after initial install
 
 ---
 
@@ -136,6 +187,11 @@ src/
 │   ├── config.py             # Configuration
 │   ├── events.py             # Event bus
 │   └── logger.py             # Logging
+├── device/
+│   ├── __init__.py
+│   ├── inventory.py          # Hardware detection
+│   ├── registry.py           # Device registry
+│   └── resources.py         # Resource allocation
 ├── services/
 │   ├── __init__.py
 │   ├── reticulum_peer.py     # Reticulum networking
