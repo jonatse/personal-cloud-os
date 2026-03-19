@@ -1,130 +1,189 @@
-# Personal Cloud OS - Architecture Specification
+# Personal Cloud OS - Design Requirements
 
-## Overview
-A personal cloud OS that runs in the background like a service, discovers peers automatically, syncs everything, and provides your full Linux environment.
+## Core Principles
 
-## Core Components
+1. **Zero Configuration** - Works automatically once installed
+2. **Self-Contained** - All dependencies bundled, no external downloads needed
+3. **Background First** - Runs as a background service, not a GUI app
+4. **CLI-First Interface** - All management via terminal
+5. **Cross-Platform** - Works identically on desktop, laptop, server
+6. **Network-Agnostic** - Works over local WiFi, TCP, or future transport layers
 
-### 1. Peer Discovery Service (Background)
-- **Purpose**: Finds other devices on the network
-- **Runs**: Always, even when app is "closed"
-- **Discovery Methods**:
-  - mDNS/Bonjour for local network discovery
-  - Peer ID broadcasting
-  - Audio/RF discovery (future)
-- **Output**: List of available peers with connection info
+---
 
-### 2. Sync Engine (Background)
-- **Purpose**: Syncs files with discovered peers
-- **Runs**: Always
-- **Features**:
-  - Bidirectional file synchronization
-  - Conflict detection and resolution
-  - Delta sync for efficiency
-  - Encrypted transfer
+## Functional Requirements
 
-### 3. Container with Linux OS (Background)
-- **Purpose**: Provides your personal Linux environment
-- **Runs**: Always - like a background service
-- **Contents**:
-  - Alpine/Debian base
-  - Your files and configs
-  - Terminal access
-  - Your tools (git, python, vim, etc.)
+### FR1: Background Service
+- **FR1.1**: App starts automatically on system boot (optional)
+- **FR1.2**: Runs in background with no visible window by default
+- **FR1.3**: Shows system tray notification when running
+- **FR1.4**: Clicking notification opens CLI management interface in default terminal
+- **FR1.5**: Can be started/stopped via CLI commands
 
-### 4. App Launcher / Display
-- **Purpose**: UI for interacting with the system
-- **Runs**: Only when actively using
-- **Features**:
-  - Open apps (calendar, terminal, files)
-  - Display container output
-  - Show peer status
-  - Sync status display
+### FR2: Peer Discovery
+- **FR2.1**: Automatically discovers other devices running Personal Cloud OS
+- **FR2.2**: Uses Reticulum for ZeroTrust encrypted networking
+- **FR2.3**: Same user identity = trusted peers for file sharing
+- **FR2.4**: Unique device identity for each device
+- **FR2.5**: Displays peer status (online/offline, connection quality)
 
-## Architecture Diagram
+### FR3: File Sync
+- **FR3.1**: Automatically syncs files between discovered peers
+- **FR3.2**: End-to-end encrypted transfers
+- **FR3.3**: Conflict detection and resolution
+- **FR3.4**: Configurable sync directories
+
+### FR4: Container Environment
+- **FR4.1**: Runs Alpine Linux container in background
+- **FR4.2**: Accessible via SSH from CLI interface
+- **FR4.3**: Persistent storage for user files
+- **FR4.4**: SSH daemon running in container
+
+### FR5: CLI Management Interface
+- **FR5.1**: Interactive CLI with menu-driven interface
+- **FR5.2**: Commands: status, peers, sync, device, network, help, exit
+- **FR5.3**: Colored output for readability
+- **FR5.4**: Tab completion for commands
+- **FR5.5**: Real-time status updates
+
+### FR6: Self-Contained Packaging
+- **FR6.1**: Single executable or self-contained directory
+- **FR6.2**: Includes all Python dependencies
+- **FR6.3**: Includes Reticulum binaries if needed
+- **FR6.4**: Works without internet after initial install
+
+---
+
+## User Interface Specification
+
+### System Tray
+- **Icon**: Cloud icon indicating Personal Cloud OS
+- **Tooltip**: Shows peer count and sync status
+- **Left-click**: Opens CLI management interface
+- **Right-click**: Context menu (Status, Start/Stop, Quit)
+
+### CLI Interface
+```
+┌─────────────────────────────────────────────────┐
+│  Personal Cloud OS v1.0                         │
+├─────────────────────────────────────────────────┤
+│  Status: Running    Peers: 1    Sync: Idle      │
+├─────────────────────────────────────────────────┤
+│  > status                                      │
+│                                                │
+│  Reticulum: Online                             │
+│  Identity: abcd1234...                         │
+│  Peers:                                        │
+│    - laptop (1 hop, encrypted)                 │
+│  Sync:                                         │
+│    - /home/user/Cloud: idle                   │
+│  Container: Running (SSH: localhost:2222)      │
+│                                                │
+│  Type 'help' for available commands            │
+└─────────────────────────────────────────────────┘
+```
+
+---
+
+## Technical Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         THE APP                                   │
-│                                                                  │
-│   ┌───────────────────────────────────────────────────────────┐ │
-│   │  PEER DISCOVERY SERVICE (Background)                      │ │
-│   │  • Finds other devices on network                        │ │
-│   │  • Runs always, even when app "closed"                   │ │
-│   │  • Audio/RF discovery later                             │ │
-│   └───────────────────────────────────────────────────────────┘ │
-│                              │                                   │
-│                              ▼                                   │
-│   ┌───────────────────────────────────────────────────────────┐ │
-│   │  SYNC ENGINE (Background)                                │ │
-│   │  • Syncs files with discovered peers                     │ │
-│   │  • Runs always                                          │ │
-│   │  • Handles conflicts                                    │ │
-│   └───────────────────────────────────────────────────────────┘ │
-│                              │                                   │
-│                              ▼                                   │
-│   ┌───────────────────────────────────────────────────────────┐ │
-│   │  CONTAINER WITH YOUR LINUX OS (Background)                 │ │
-│   │  • Your Alpine/Debian environment                        │ │
-│   │  • Your files, configs, terminal                         │ │
-│   │  • All your tools (git, python, vim, etc.)              │ │
-│   │  • Runs always - like a background service               │ │
-│   └───────────────────────────────────────────────────────────┘ │
-│                              │                                   │
-│                              ▼                                   │
-│   ┌───────────────────────────────────────────────────────────┐ │
-│   │  APP LAUNCHER / DISPLAY                                  │ │
-│   │  • Open calendar, terminal, files                        │ │
-│   │  • Display container output to screen                   │ │
-│   │  • Only needed when you're actively using               │ │
-│   └───────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────┐
+│              Host Operating System              │
+│    (Linux, started on boot via systemd/launchd) │
+└──────────────────────┬──────────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────────┐
+│            Personal Cloud OS Service            │
+│                                                  │
+│  ┌────────────────────────────────────────────┐ │
+│  │  Reticulum Network Layer                   │ │
+│  │  - ZeroTrust encrypted networking          │ │
+│  │  - Peer discovery                         │ │
+│  │  - File transfer                           │ │
+│  └────────────────────────────────────────────┘ │
+│                                                  │
+│  ┌──────────────┐  ┌──────────────────────────┐ │
+│  │   Service   │  │    Container Manager     │ │
+│  │   Manager   │  │  ┌────────────────────┐  │ │
+│  │  - Start    │  │  │  Alpine Linux      │  │ │
+│  │  - Stop     │  │  │  - SSH Daemon      │  │ │
+│  │  - Status   │  │  │  - User Files      │  │ │
+│  └──────────────┘  │  │  - Tools           │  │ │
+│                     │  └────────────────────┘  │ │
+│                     └──────────────────────────┘ │
+└──────────────────────────────────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────────┐
+│           CLI Management Interface              │
+│    (Opens in terminal when tray icon clicked)   │
+└──────────────────────────────────────────────────┘
 ```
 
-## Implementation
+---
 
-### Technology Stack
-- **Language**: Python 3.10+
-- **Container**: Docker SDK for Python
-- **Discovery**: zeroconf (mDNS), socket broadcasting
-- **Sync**: rsync-like delta algorithm
-- **UI**: Tkinter (desktop), future: mobile
+## Module Structure
 
-### Module Structure
 ```
 src/
+├── main.py                    # Entry point, service startup
+├── cli/
+│   ├── __init__.py
+│   ├── interface.py          # Interactive CLI shell
+│   └── commands.py           # CLI commands
 ├── core/
 │   ├── __init__.py
-│   ├── config.py          # Configuration management
-│   ├── events.py          # Event system for inter-service communication
-│   └── logger.py          # Logging setup
+│   ├── config.py             # Configuration
+│   ├── events.py             # Event bus
+│   └── logger.py             # Logging
 ├── services/
 │   ├── __init__.py
-│   ├── discovery.py       # Peer Discovery Service
-│   └── sync.py            # Sync Engine
+│   ├── reticulum_peer.py     # Reticulum networking
+│   ├── discovery.py          # Peer discovery
+│   ├── peer_link.py          # P2P links
+│   └── sync.py               # File sync
 ├── container/
 │   ├── __init__.py
-│   └── manager.py         # Container lifecycle management
-├── ui/
+│   └── manager.py            # Docker container
+├── tray/
 │   ├── __init__.py
-│   ├── launcher.py        # App Launcher / Display
-│   └── components.py      # Reusable UI components
-└── main.py                # Entry point
+│   └── system_tray.py       # System tray icon
+└── install/
+    ├── setup.py              # Installation script
+    └── requirements.txt      # Python dependencies
 ```
 
-## User Flow
+---
 
-1. **Host OS boots**
-2. **App starts in background**
-   - Peer Discovery starts (finds laptop if online)
-   - Sync Engine starts (gets latest files)
-   - Container starts (your OS boots)
-3. **User opens apps** (terminal, calendar, files...)
-4. **Host OS is now irrelevant** - everything runs in the cloud OS
+## Acceptance Criteria
 
-## Future Enhancements
-- Mobile support (phone)
-- Audio-based discovery
-- RF-based discovery
-- End-to-end encryption
-- Distributed file system
+### AC1: Installation
+- [ ] Can be installed with single command or script
+- [ ] No external dependencies required at runtime
+- [ ] Works on fresh Linux install
+
+### AC2: Background Operation
+- [ ] App runs in background after launch
+- [ ] System tray icon appears
+- [ ] Services start automatically
+- [ ] Works over SSH (no display required)
+
+### AC3: Peer Discovery
+- [ ] Discovers other devices on same network
+- [ ] Shows peer status in CLI
+- [ ] Connection is encrypted
+
+### AC4: File Sync
+- [ ] Syncs files between devices
+- [ ] Shows sync status
+- [ ] Handles conflicts gracefully
+
+### AC5: CLI Interface
+- [ ] Opens in terminal from tray click
+- [ ] Shows real-time status
+- [ ] All commands work as documented
+
+### AC6: Consistency
+- [ ] Works identically on laptop and desktop
+- [ ] Same commands, same behavior
+- [ ] No device-specific configuration needed

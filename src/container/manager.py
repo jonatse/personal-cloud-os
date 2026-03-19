@@ -257,7 +257,7 @@ class ContainerManager:
             self._state = state
         
         # Publish state change event
-        asyncio.create_task(self.event_bus.publish(asyncio.Event(
+        asyncio.create_task(self.event_bus.publish(Event(
             type=f"container.{state.value}",
             data={"container_id": self._container_id, "state": state.value},
             source="container"

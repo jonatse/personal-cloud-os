@@ -4,6 +4,7 @@ import logging
 import signal
 import sys
 import os
+import argparse
 
 # Add src to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -16,7 +17,7 @@ from services.discovery import PeerDiscoveryService
 from services.peer_link import PeerLinkService
 from services.sync import SyncEngine
 from container.manager import ContainerManager
-from ui.launcher import AppLauncher
+from cli.interface import CLIInterface
 
 
 logger = get_logger(__name__)
@@ -26,48 +27,10 @@ class PersonalCloudOS:
     """
     Main application class that orchestrates all services.
     
-    Architecture:
-    ┌─────────────────────────────────────────────────────────────────┐
-    │                         THE APP                                 │
-    │                                                                  │
-    │   ┌───────────────────────────────────────────────────────────┐ │
-    │   │  RETICULUM NETWORK LAYER (Background)                    │ │
-    │   │  • Embedded RNS library (no rnsd daemon)                │ │
-    │   │  • Identity-based peer discovery                      │ │
-    │   │  • Encrypted P2P links                                  │ │
-    │   └───────────────────────────────────────────────────────────┘ │
-    │                              │                                   │
-    │                              ▼                                   │
-    │   ┌───────────────────────────────────────────────────────────┐ │
-    │   │  PEER DISCOVERY (Background)                            │ │
-    │   │  • Uses Reticulum for peer finding                       │ │
-    │   │  • Same identity = automatic discovery                  │ │
-    │   └───────────────────────────────────────────────────────────┘ │
-    │                              │                                   │
-    │                              ▼                                   │
-    │   ┌───────────────────────────────────────────────────────────┐ │
-    │   │  SYNC ENGINE (Background)                                │ │
-    │   │  • Syncs files with discovered peers                     │ │
-    │   │  • Encrypted transfers via Reticulum links              │ │
-    │   └───────────────────────────────────────────────────────────┘ │
-    │                              │                                   │
-    │                              ▼                                   │
-    │   ┌───────────────────────────────────────────────────────────┐ │
-    │   │  CONTAINER WITH YOUR LINUX OS (Background)              │ │
-    │   │  • Alpine/Debian environment                             │ │
-    │   │  • Your files, configs, terminal                         │ │
-    │   └───────────────────────────────────────────────────────────┘ │
-    │                              │                                   │
-    │                              ▼                                   │
-    │   ┌───────────────────────────────────────────────────────────┐ │
-    │   │  APP LAUNCHER / DISPLAY                                  │ │
-    │   │  • Open calendar, terminal, files                        │ │
-    │   │  • Display peer status, sync status                      │ │
-    │   └───────────────────────────────────────────────────────────┘ │
-    └─────────────────────────────────────────────────────────────────┘
+    Runs as a background service with CLI management interface.
     """
     
-    def __init__(self):
+    def __init__(self, cli_mode=False):
         """Initialize the application."""
         # Load configuration
         self.config = Config()
@@ -77,6 +40,9 @@ class PersonalCloudOS:
             level="DEBUG" if self.config.get("app.debug") else "INFO",
             log_file=os.path.expanduser("~/.local/share/pcos/logs/app.log")
         )
+        
+        # CLI mode flag
+        self.cli_mode = cli_mode
         
         logger.info("=" * 60)
         logger.info("Personal Cloud OS Starting...")
@@ -106,15 +72,6 @@ class PersonalCloudOS:
         
         # Initialize container manager
         self.container_manager = ContainerManager(self.config, event_bus)
-        
-        # Initialize UI
-        self.launcher = AppLauncher(
-            self.config,
-            event_bus,
-            self.discovery_service,
-            self.sync_engine,
-            self.container_manager
-        )
         
         # Setup signal handlers
         self._setup_signals()
@@ -220,12 +177,6 @@ class PersonalCloudOS:
         except Exception as e:
             logger.error(f"Error stopping container: {e}")
         
-        # Stop UI
-        try:
-            self.launcher.stop()
-        except Exception as e:
-            logger.error(f"Error stopping launcher: {e}")
-        
         logger.info("All services stopped!")
         
         # Exit
@@ -240,11 +191,24 @@ class PersonalCloudOS:
         # Start services
         loop.run_until_complete(self.start())
         
-        # Start UI (this blocks)
-        try:
-            self.launcher.start()
-        except KeyboardInterrupt:
-            pass
+        if self.cli_mode:
+            # CLI mode - run interactive CLI
+            cli = CLIInterface(self)
+            try:
+                cli.start()
+            except KeyboardInterrupt:
+                pass
+        else:
+            # Background mode - just wait
+            logger.info("Running in background. Use CLI to manage.")
+            logger.info("  python main.py --cli    # Open CLI")
+            logger.info("  python main.py --status # Show status and exit")
+            
+            try:
+                while self._running:
+                    signal.pause()
+            except KeyboardInterrupt:
+                pass
         
         # Stop services
         loop.run_until_complete(self.stop())
@@ -253,7 +217,37 @@ class PersonalCloudOS:
 
 def main():
     """Main entry point."""
-    app = PersonalCloudOS()
+    parser = argparse.ArgumentParser(description='Personal Cloud OS')
+    parser.add_argument('--cli', action='store_true', help='Open CLI interface')
+    parser.add_argument('--tray', action='store_true', help='Run with system tray')
+    parser.add_argument('--status', action='store_true', help='Show status and exit')
+    parser.add_argument('--start', action='store_true', help='Start services and run in background')
+    parser.add_argument('--stop', action='store_true', help='Stop running services')
+    
+    args = parser.parse_args()
+    
+    if args.status:
+        # Just show status
+        print("Checking Personal Cloud OS status...")
+        print("Run with --start to start the service")
+        return
+    
+    if args.tray:
+        # Run with system tray
+        try:
+            from tray.system_tray import SystemTray
+            app = PersonalCloudOS()
+            tray = SystemTray(app)
+            tray.start()
+            app.run()
+        except ImportError as e:
+            print(f"System tray not available: {e}")
+            print("Falling back to background mode...")
+            app = PersonalCloudOS()
+            app.run()
+        return
+    
+    app = PersonalCloudOS(cli_mode=args.cli)
     app.run()
 
 
