@@ -178,17 +178,26 @@ class ReticulumPeerService:
             logger.debug(f"Creating new Reticulum instance: {e}")
             self._reticulum = RNS.Reticulum(config_path)
         
-        # Log available interfaces
-        interfaces = RNS.Transport.get_interfaces()
-        logger.info(f"Reticulum interfaces available: {len(interfaces)}")
-        for iface in interfaces:
-            logger.info(f"  - {iface.name}: {iface.type} (status: {iface.status})")
+        # Log available interfaces if Transport.get_interfaces exists
+        try:
+            if hasattr(RNS.Transport, 'get_interfaces'):
+                interfaces = RNS.Transport.get_interfaces()
+                logger.info(f"Reticulum interfaces available: {len(interfaces)}")
+                for iface in interfaces:
+                    logger.info(f"  - {iface.name}: {iface.type} (status: {iface.status})")
+            else:
+                logger.debug("Transport.get_interfaces not available in this Reticulum version")
+        except Exception as e:
+            logger.debug(f"Could not get interfaces: {e}")
         
         # Add AutoInterface for local network peer discovery
         # This enables LAN peer discovery via broadcast
         try:
-            auto_iface = RNS.AutoInterface()
-            logger.info(f"AutoInterface added: {auto_iface.name}")
+            if hasattr(RNS, 'AutoInterface'):
+                auto_iface = RNS.AutoInterface()
+                logger.info(f"AutoInterface added: {auto_iface.name}")
+            else:
+                logger.debug("AutoInterface not available in this Reticulum version")
         except Exception as e:
             logger.warning(f"Failed to add AutoInterface: {e}")
         
