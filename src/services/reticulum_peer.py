@@ -178,6 +178,20 @@ class ReticulumPeerService:
             logger.debug(f"Creating new Reticulum instance: {e}")
             self._reticulum = RNS.Reticulum(config_path)
         
+        # Log available interfaces
+        interfaces = RNS.Transport.get_interfaces()
+        logger.info(f"Reticulum interfaces available: {len(interfaces)}")
+        for iface in interfaces:
+            logger.info(f"  - {iface.name}: {iface.type} (status: {iface.status})")
+        
+        # Add AutoInterface for local network peer discovery
+        # This enables LAN peer discovery via broadcast
+        try:
+            auto_iface = RNS.AutoInterface()
+            logger.info(f"AutoInterface added: {auto_iface.name}")
+        except Exception as e:
+            logger.warning(f"Failed to add AutoInterface: {e}")
+        
         # Load or create identity
         self._identity = await self._load_or_create_identity()
         
@@ -238,7 +252,7 @@ class ReticulumPeerService:
             try:
                 if self._destination:
                     self._destination.announce()
-                    logger.debug("Announced presence on Reticulum network")
+                    logger.info("Announced presence on Reticulum network")
             except Exception as e:
                 logger.error(f"Announce error: {e}")
             
@@ -254,6 +268,7 @@ class ReticulumPeerService:
         
         This is called when another peer announces on the network.
         """
+        logger.info(f"Received announce: dest={announced_destination}, hash={announced_hash}, app_data={app_data}")
         try:
             peer_hash = announced_hash.hex() if hasattr(announced_hash, 'hex') else announced_hash
             peer_name = "Peer"

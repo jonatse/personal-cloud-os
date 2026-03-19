@@ -39,6 +39,28 @@ This document tracks what we are currently WORKING ON and what needs to be done 
   - Can establish encrypted link between devices
   - Can send/receive test messages
 
+### CRITICAL: Self-Contained Container (NEW - HIGH PRIORITY)
+**Goal**: Container functionality must be self-contained within the app
+
+- [ ] **P0.1**: Remove Docker dependency
+  - Current implementation requires Docker to be installed
+  - Must be completely self-contained
+  - No external downloads needed beyond the app itself
+  
+- [ ] **P0.2**: Research self-contained container solutions
+  - AppImage-like packaging (all dependencies bundled)
+  - Consider: chroot, proot, or custom container runtime
+  - Must work on base Debian/Ubuntu with only kernel features
+  
+- [ ] **P0.3**: Implement bundled container runtime
+  - Container engine bundled with the app
+  - Works offline-first
+  - No Docker/podman required on host system
+  
+- [ ] **P0.4**: Test container on fresh system
+  - Verify works with just OS + app
+  - No additional packages needed
+
 ### PHASE 2: User Identity Management
 **Goal**: Know which devices belong to which user
 
@@ -82,6 +104,9 @@ This document tracks what we are currently WORKING ON and what needs to be done 
 - **Phase**: 1 (Networking Foundation)
 - **P1.1**: Complete (bugs fixed)
 - Need to test
+- **CRITICAL**: Self-Contained Container is now HIGH PRIORITY (P0.x)
+  - Must remove Docker dependency before proceeding with container feature
+  - Research and implement self-contained solution
 
 ## Next Steps
 
