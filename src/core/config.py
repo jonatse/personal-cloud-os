@@ -40,6 +40,9 @@ class Config:
         "network": {
             "bind_address": "0.0.0.0",
             "max_peers": 10
+        },
+        "device_inventory": {
+            "path": "src/core/device_inventory.json"
         }
     }
     

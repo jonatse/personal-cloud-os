@@ -56,6 +56,12 @@
   - Path to app installation directory on this device
   - Used for remote management and locating app files
   - Can be queried via CLI for troubleshooting
+- **FR3.6**: Device inventory file
+  - Stored at `src/core/device_inventory.json`
+  - Contains device registry with all user devices
+  - Each device entry includes: name, hostname, is_local flag, SSH credentials, project_path, last_updated
+  - SSH credentials include: user, host, port, password
+  - Used for device discovery and remote access
 
 ### FR4: File Sync
 - **FR4.1**: Automatically syncs files between discovered peers
