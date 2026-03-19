@@ -1,11 +1,20 @@
 """App Launcher / Display - UI for interacting with the system."""
 import asyncio
 import logging
-import tkinter as tk
-from tkinter import ttk, scrolledtext
+import time
 from typing import Dict, Callable, Optional
 from dataclasses import dataclass
 from datetime import datetime
+
+try:
+    import tkinter as tk
+    from tkinter import ttk, scrolledtext
+    TKINTER_AVAILABLE = True
+except ImportError:
+    TKINTER_AVAILABLE = False
+    tk = None
+    ttk = None
+    scrolledtext = None
 
 
 logger = logging.getLogger(__name__)
@@ -133,6 +142,11 @@ class AppLauncher:
         logger.info("Starting app launcher...")
         self._running = True
         
+        if not TKINTER_AVAILABLE:
+            logger.info("App launcher running in headless mode (no GUI)")
+            self._run_headless_loop()
+            return
+        
         # Create main window
         self._root = tk.Tk()
         self._root.title("Personal Cloud OS")
@@ -150,6 +164,36 @@ class AppLauncher:
         
         # Run main loop
         self._root.mainloop()
+    
+    def _run_headless_loop(self):
+        """Run the launcher in headless mode with periodic status logging."""
+        logger.info("Starting headless status loop...")
+        while self._running:
+            # Log peer status
+            peer_count = self.discovery_service.peer_count
+            peers = self.discovery_service.get_peers()
+            if peer_count > 0:
+                peer_names = ", ".join([p.name for p in peers[:3]])
+                if len(peers) > 3:
+                    peer_names += f" (+{len(peers)-3} more)"
+                logger.info(f"Headless status - Peers: {peer_count} ({peer_names})")
+            else:
+                logger.info("Headless status - Peers: Searching on network...")
+            
+            # Log sync status
+            sync_status_data = self.sync_engine.get_status()
+            sync_text = f"Sync: {sync_status_data.state}"
+            if sync_status_data.files_synced > 0:
+                sync_text += f" ({sync_status_data.files_synced}/{sync_status_data.files_total})"
+            logger.info(f"Headless status - {sync_text}")
+            
+            # Sleep between status updates
+            for _ in range(10):
+                if not self._running:
+                    break
+                time.sleep(1)
+        
+        logger.info("Headless status loop stopped")
     
     def _build_ui(self):
         """Build the main UI."""
@@ -625,6 +669,10 @@ class AppLauncher:
             self._root.deiconify()
             self._root.focus()
     
+    def is_running(self):
+        """Check if the launcher is still running."""
+        return self._running
+
     def stop(self):
         """Stop the UI."""
         self._running = False
