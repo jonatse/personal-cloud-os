@@ -41,6 +41,7 @@ class EventBus:
     
     async def publish(self, event: Event):
         """Publish an event to all subscribers."""
+        logger.info(f"[EVENT BUS] Publishing: {event.type} from {event.source}")
         self._event_history.append(event)
         if len(self._event_history) > self._max_history:
             self._event_history.pop(0)
@@ -48,6 +49,7 @@ class EventBus:
         logger.debug(f"Publishing event: {event.type}")
         
         if event.type in self._subscribers:
+            logger.info(f"[EVENT BUS] Found {len(self._subscribers[event.type])} subscribers for {event.type}")
             for callback in self._subscribers[event.type]:
                 try:
                     if asyncio.iscoroutinefunction(callback):
