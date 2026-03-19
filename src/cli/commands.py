@@ -91,10 +91,17 @@ class CommandHandler:
         else:
             print(f"  {'Reticulum:':15} Offline")
         
-        # Peers
+        # Peers - add debug output
         discovery = getattr(self.app, 'discovery_service', None)
+        print(f"  [DEBUG] discovery service: {discovery}")
         if discovery:
-            peers = discovery.get_peers() if hasattr(discovery, 'get_peers') else []
+            print(f"  [DEBUG] has get_peers: {hasattr(discovery, 'get_peers')}")
+            try:
+                peers = discovery.get_peers() if hasattr(discovery, 'get_peers') else []
+                print(f"  [DEBUG] get_peers() returned: {peers} (len={len(peers)})")
+            except Exception as e:
+                print(f"  [DEBUG] get_peers() error: {e}")
+                peers = []
             peer_count = len(peers)
             print(f"  {'Peers:':15} {peer_count} connected")
             for peer in peers[:3]:
