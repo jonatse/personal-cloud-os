@@ -195,7 +195,8 @@ class ReticulumPeerService:
         logger.info("Checking for AutoInterface support...")
         if hasattr(RNS.Interfaces, 'AutoInterface'):
             try:
-                auto_iface = RNS.Interfaces.AutoInterface()
+                import RNS.Interfaces.AutoInterface as AutoInterfaceModule
+                auto_iface = AutoInterfaceModule.AutoInterface()
                 logger.info(f"AutoInterface added successfully: {auto_iface.name}")
                 # Also try to register it with Transport
                 if hasattr(RNS.Transport, 'register_interface'):
