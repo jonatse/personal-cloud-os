@@ -9,6 +9,7 @@ from enum import Enum
 import threading
 import subprocess
 
+from src.core.events import Event
 
 logger = logging.getLogger(__name__)
 
