@@ -32,9 +32,13 @@ class CLIInterface:
                 cmd = input(prompt).strip()
                 
                 if cmd:
-                    if not self.command_handler.execute(cmd):
+                    result = self.command_handler.execute(cmd)
+                    if not result:
                         break
-                        
+                    # Print compact status after each command
+                    print()
+                    self._print_status_bar()
+                    
             except KeyboardInterrupt:
                 print("\nUse 'exit' to close CLI, 'quit' to stop the app.")
                 continue
@@ -56,6 +60,24 @@ class CLIInterface:
         print("  Type '\033[1;33mexit\033[0m' to close CLI (keeps running)")
         print("  Type '\033[1;33mquit\033[0m' to stop the application")
         print("=" * 50 + "\n")
+    
+    def _print_status_bar(self):
+        """Print compact status bar."""
+        # Get peer count
+        discovery = getattr(self.app, 'discovery_service', None)
+        ret_service = getattr(self.app, 'reticulum_service', None)
+        
+        peer_count = 0
+        if discovery:
+            peer_count = len(discovery.get_peers()) if hasattr(discovery, 'get_peers') else 0
+        
+        identity = "Unknown"
+        if ret_service and hasattr(ret_service, '_identity_hash'):
+            identity = ret_service._identity_hash[:12] + "..."
+        
+        print("─" * 50)
+        print(f"  Reticulum: {identity} | Peers: {peer_count} | Press Enter to refresh")
+        print("─" * 50)
     
     def stop(self):
         """Stop the CLI."""

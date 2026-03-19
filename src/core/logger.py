@@ -17,13 +17,14 @@ def setup_logging(
     # Create formatters
     formatter = logging.Formatter(format_string)
     
-    # Console handler
+    # Console handler - only warnings and above
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
+    console_handler.setLevel(logging.WARNING)  # Only show warnings+ to console
     
-    # Root logger
+    # Root logger - set to DEBUG to allow file handler to capture everything
     root_logger = logging.getLogger()
-    root_logger.setLevel(getattr(logging, level.upper()))
+    root_logger.setLevel(logging.DEBUG)  # Capture all for file
     root_logger.addHandler(console_handler)
     
     # File handler if specified
