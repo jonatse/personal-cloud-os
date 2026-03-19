@@ -94,8 +94,8 @@ class CommandHandler:
         # Peers
         discovery = getattr(self.app, 'discovery_service', None)
         if discovery:
-            peer_count = getattr(discovery, 'peer_count', 0)
             peers = discovery.get_peers() if hasattr(discovery, 'get_peers') else []
+            peer_count = len(peers)
             print(f"  {'Peers:':15} {peer_count} connected")
             for peer in peers[:3]:
                 print(f"    - {peer.name}")
