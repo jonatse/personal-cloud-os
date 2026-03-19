@@ -261,7 +261,7 @@ class ReticulumPeerService:
             try:
                 if self._destination:
                     self._destination.announce()
-                    logger.info("Announced presence on Reticulum network")
+                    logger.debug("Announced presence on Reticulum network")
             except Exception as e:
                 logger.error(f"Announce error: {e}")
             
