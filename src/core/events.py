@@ -39,8 +39,20 @@ class EventBus:
         if event_type in self._subscribers:
             self._subscribers[event_type].remove(callback)
     
-    async def publish(self, event: Event):
-        """Publish an event to all subscribers."""
+    async def publish(self, event: Event = None, *, type: str = None, data: Any = None, source: str = "system"):
+        """Publish an event to all subscribers.
+        
+        Can be called either way:
+        - publish(Event(...)) 
+        - publish(type="event.name", data={...}, source="...")
+        """
+        # Handle both calling styles
+        if event is None and type is not None:
+            # Called with keyword arguments
+            event = Event(type=type, data=data, source=source)
+        elif event is None:
+            raise ValueError("Either event object or type must be provided")
+        
         logger.info(f"[EVENT BUS] Publishing: {event.type} from {event.source}")
         self._event_history.append(event)
         if len(self._event_history) > self._max_history:

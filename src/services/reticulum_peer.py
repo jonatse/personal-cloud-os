@@ -339,6 +339,12 @@ class ReticulumPeerService:
         with self._lock:
             return self._peers.get(peer_id)
     
+    def get_peer_destination(self, peer_id: str):
+        """Get destination for a peer."""
+        with self._lock:
+            peer = self._peers.get(peer_id)
+            return peer.destination if peer else None
+    
     def is_running(self) -> bool:
         """Check if the service is running."""
         return self._running
