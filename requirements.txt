@@ -24,3 +24,6 @@ Pillow >= 10.0.0
 
 # CLI
 prompt-toolkit >= 3.0.0
+
+# System info
+psutil >= 5.9.0
