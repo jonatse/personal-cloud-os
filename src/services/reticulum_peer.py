@@ -94,18 +94,12 @@ class ReticulumPeerService:
         self._running = False
         self._announce_interval = config.get("reticulum.announce_interval", 30)
         
-        # Use device-specific identity path from DeviceManager if available
-        # Falls back to config, then default
+        # User identity settings
         self._identity_path = config.get(
             "reticulum.identity_path",
             os.path.expanduser("~/.reticulum/storage/identities/pcos")
         )
-        self._user_name = config.get("app.name", "PersonalCloudOS")
         
-        # Callbacks
-        self._peer_callbacks: List[Callable] = []
-        
-        # Event loop reference for thread-safe scheduling
         self._event_loop = None
         
         logger.info("ReticulumPeerService initialized")
@@ -123,19 +117,6 @@ class ReticulumPeerService:
         self._event_loop = asyncio.get_event_loop()
         
         try:
-            # Use device-specific identity if DeviceManager is available via app
-            try:
-                from core.device_manager import DeviceManager
-                dm = DeviceManager()
-                device = dm.get_my_device()
-                if device and device.get("identity_path"):
-                    self._identity_path = device["identity_path"]
-                    logger.info(f"Using device-specific identity path: {self._identity_path}")
-                else:
-                    logger.info(f"No device-specific identity in inventory, using: {self._identity_path}")
-            except Exception as e:
-                logger.warning(f"Could not load DeviceManager, using default identity path: {e}")
-
             # Initialize Reticulum network stack
             await self._init_reticulum()
             
@@ -161,6 +142,9 @@ class ReticulumPeerService:
     
     async def stop(self):
         """Stop the Reticulum peer service."""
+        if self._running:
+            return
+        
         logger.info("Stopping Reticulum peer service...")
         self._running = False
         
@@ -169,6 +153,12 @@ class ReticulumPeerService:
         
         logger.info("Reticulum peer service stopped")
         await self._publish_event("reticulum.stopped", {})
+    
+    async def restart(self):
+        """Restart the Reticulum peer service."""
+        await self.stop()
+        await asyncio.sleep(2)
+        await self.start()
     
     async def _init_reticulum(self):
         """Initialize Reticulum network stack."""
@@ -204,39 +194,8 @@ class ReticulumPeerService:
                 logger.debug("Transport.get_interfaces not available in this Reticulum version")
         except Exception as e:
             logger.debug(f"Could not get interfaces: {e}")
-
-        # Add AutoInterface for local network peer discovery
-        # This enables LAN peer discovery via broadcast
-        logger.info("Checking for AutoInterface support...")
-        if hasattr(RNS.Interfaces, 'AutoInterface'):
-            from RNS.Interfaces.AutoInterface import AutoInterface
-            try:
-                # Create a basic configuration for AutoInterface
-                # Based on the class defaults we saw earlier
-                config = {
-                    'peer_announce_interval': AutoInterface.ANNOUNCE_INTERVAL,
-                    'announce_interval': AutoInterface.ANNOUNCE_INTERVAL,
-                    'ignore_interfaces': AutoInterface.ALL_IGNORE_IFS,
-                    'data_port': AutoInterface.DEFAULT_DATA_PORT,
-                    'discovery_port': AutoInterface.DEFAULT_DISCOVERY_PORT,
-                    'group_id': AutoInterface.DEFAULT_GROUP_ID,
-                    'ifac_size': AutoInterface.DEFAULT_IFAC_SIZE,
-                    'hw_mtu': AutoInterface.HW_MTU,
-                    'fixed_mtu': AutoInterface.FIXED_MTU,
-                }
-                auto_iface = AutoInterface(self._reticulum, config)
-                logger.info(f"AutoInterface added successfully: {auto_iface.name}")
-                # Register with Transport if needed
-                if hasattr(RNS.Transport, 'register_interface'):
-                    RNS.Transport.register_interface(auto_iface)
-                    logger.info("AutoInterface registered with Transport")
-            except Exception as e:
-                logger.warning(f"Failed to add AutoInterface: {e}")
-                import traceback
-                logger.debug(traceback.format_exc())
-        else:
-            logger.warning("AutoInterface not available in this Reticulum version")
-            logger.info("Reticulum version: " + str(dir(RNS))[:200])
+        
+        logger.info("Using rnsd shared instance for LAN discovery (AutoInterface managed by rnsd)")
         
         # Load or create identity
         self._identity = await self._load_or_create_identity()
@@ -260,9 +219,19 @@ class ReticulumPeerService:
         # Store destination hash
         self._destination_hash = self._destination.hash.hex()
         
-        # Register announce handler via Transport for peer discovery
-        # This allows us to receive announces from other peers
-        RNS.Transport.register_announce_handler(self._handle_announce)
+        # Register announce handler - must be a class with aspect_filter
+        class PCOSAnnounceHandler:
+            aspect_filter = f"{APP_NAME}.{PEER_DESTINATION}"
+            
+            def __init__(self, peer_service):
+                self.peer_service = peer_service
+            
+            def received_announce(self, destination_hash, announced_identity, app_data):
+                self.peer_service._handle_announce(destination_hash, announced_identity, app_data)
+        
+        self._announce_handler = PCOSAnnounceHandler(self)
+        RNS.Transport.register_announce_handler(self._announce_handler)
+        logger.info(f"Announce handler registered for aspect: {PCOSAnnounceHandler.aspect_filter}")
         
         logger.info(f"Destination created: {self._destination_hash[:16]}...")
     
@@ -288,77 +257,77 @@ class ReticulumPeerService:
         # Save identity
         os.makedirs(os.path.dirname(identity_file), exist_ok=True)
         identity.to_file(identity_file)
-        logger.info(f"New identity.to_filed to: {identity_file}")
+        logger.info(f"New identity saved to: {identity_file}")
         
         return identity
     
     def _announce_loop(self):
-        """Background thread: periodically announce our presence."""
+        import json, socket
+        app_data = json.dumps({"name": socket.gethostname()}).encode()
         while self._running:
             try:
                 if self._destination:
-                    self._destination.announce()
-                    logger.debug("Announced presence on Reticulum network")
+                    self._destination.announce(app_data=app_data)
+                    logger.debug(f"Announced presence as {socket.gethostname()}")
             except Exception as e:
                 logger.error(f"Announce error: {e}")
-            
-            # Sleep for announce interval
             for _ in range(self._announce_interval * 10):
                 if not self._running:
                     break
                 threading.Event().wait(0.1)
     
-    def _handle_announce(self, announced_destination, announced_hash, app_data):
-        """
-        Handle incoming peer announcement.
-        
-        This is called when another peer announces on the network.
-        """
-        logger.info(f"Received announce: dest={announced_destination}, hash={announced_hash}, app_data={app_data}")
+    def _handle_announce(self, destination_hash, announced_identity, app_data):
+        """Handle incoming peer announcement from Reticulum."""
         try:
-            peer_hash = announced_hash.hex() if hasattr(announced_hash, 'hex') else announced_hash
-            peer_name = "Peer"
+            peer_hash = destination_hash.hex() if hasattr(destination_hash, 'hex') else str(destination_hash)
+            peer_name = "Unknown"
             if app_data:
                 try:
-                    import json
-                    peer_name = json.loads(app_data).get("name", "Peer")
+                    import json as _json
+                    peer_name = _json.loads(app_data).get("name", "Peer")
                 except:
-                    peer_name = str(app_data)[:20] if app_data else "Peer"
+                    peer_name = str(app_data)[:20]
+            
+            logger.info(f"Received announce from: {peer_name} ({peer_hash[:16]}...)")
             
             # Don't respond to ourselves
             if peer_hash == self._destination_hash:
+                logger.debug("Ignoring our own announce")
                 return
             
             with self._lock:
-                # Check if we already know this peer
                 is_new = peer_hash not in self._peers
-                
                 peer = ReticulumPeer(
                     id=peer_hash,
                     name=peer_name,
-                    destination=announced_destination,
+                    destination=announced_identity,
                     status=PeerStatus.DISCOVERED,
                     last_seen=datetime.now(),
-                    metadata=app_data or {}
+                    metadata={}
                 )
-                
                 self._peers[peer_hash] = peer
                 
                 if is_new:
-                    logger.info(f"Discovered Reticulum peer: {peer_name} ({peer_hash[:16]}...)")
+                    logger.info(f"NEW PEER DISCOVERED: {peer_name} ({peer_hash[:16]}...)")
                     asyncio.run_coroutine_threadsafe(
                         self._publish_event("peer.discovered", peer.to_dict()),
                         self._event_loop
                     )
                 else:
-                    # Update last seen
+                    logger.debug(f"Known peer updated: {peer_name}")
                     asyncio.run_coroutine_threadsafe(
                         self._publish_event("peer.updated", peer.to_dict()),
                         self._event_loop
                     )
-                    
         except Exception as e:
             logger.error(f"Error handling announce: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+    
+    async def _publish_event(self, event_type: str, data: Any = None):
+        """Publish an event to the event bus."""
+        event = Event(type=event_type, data=data, source="reticulum")
+        await self.event_bus.publish(event)
     
     def get_peers(self) -> List[ReticulumPeer]:
         """Get list of discovered peers."""
@@ -370,55 +339,6 @@ class ReticulumPeerService:
         with self._lock:
             return self._peers.get(peer_id)
     
-    def get_peer_destination(self, peer_id: str):
-        """Get Reticulum destination for a peer (for linking)."""
-        peer = self.get_peer(peer_id)
-        return peer.destination if peer else None
-    
-    def create_link(self, peer_id: str) -> Optional[Any]:
-        """
-        Create an encrypted link to a peer.
-        
-        Returns RNS.Link object or None if peer not found.
-        """
-        peer = self.get_peer(peer_id)
-        if not peer:
-            logger.warning(f"Cannot create link: peer {peer_id} not found")
-            return None
-        
-        try:
-            link = RNS.Link(peer.destination)
-            logger.info(f"Created link to peer: {peer.name}")
-            return link
-        except Exception as e:
-            logger.error(f"Failed to create link: {e}")
-            return None
-    
-    def get_identity_hash(self) -> str:
-        """Get our identity hash (hex)."""
-        return getattr(self, '_identity_hash', None)
-    
-    def get_destination_hash(self) -> str:
-        """Get our destination hash (hex)."""
-        return getattr(self, '_destination_hash', None)
-    
     def is_running(self) -> bool:
-        """Check if service is running."""
+        """Check if the service is running."""
         return self._running
-    
-    @property
-    def peer_count(self) -> int:
-        """Get number of discovered peers."""
-        with self._lock:
-            return len(self._peers)
-    
-    async def _publish_event(self, event_type: str, data: dict):
-        """Publish event to event bus."""
-        try:
-            await self.event_bus.publish(Event(type=event_type, data=data, source="reticulum"))
-        except Exception as e:
-            logger.error(f"Failed to publish event: {e}")
-    
-    def on_peer_discovered(self, callback: Callable):
-        """Register callback for peer discovery."""
-        self._peer_callbacks.append(callback)
