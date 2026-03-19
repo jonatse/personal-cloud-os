@@ -170,9 +170,22 @@ class CommandHandler:
         ret_service = getattr(self.app, 'reticulum_service', None)
         if ret_service:
             identity = getattr(ret_service, '_identity_hash', 'Unknown')
+            dest_hash = getattr(ret_service, '_destination_hash', 'Unknown')
             print(f"  Device Identity: {identity[:32]}...")
-            print(f"  Network Interface: AutoInterface (UDP)")
-            print(f"  Status: Connected")
+            print(f"  Destination Hash: {dest_hash[:32]}...")
+            
+            # Show network interfaces
+            print(f"\n  Network Interfaces:")
+            print(f"    • AutoInterface (UDP broadcast)")
+            print(f"      - Used for local LAN peer discovery")
+            
+            # Show announce interval
+            interval = getattr(ret_service, '_announce_interval', 30)
+            print(f"\n  Announce Settings:")
+            print(f"    • Interval: {interval} seconds")
+            print(f"    • Status: Broadcasting presence")
+            
+            print(f"\n  Status: Online")
         else:
             print("  Reticulum not available.")
         
