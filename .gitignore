@@ -9,3 +9,4 @@ htmlcov/
 dist/
 build/
 *.log
+src/core/device_inventory.json

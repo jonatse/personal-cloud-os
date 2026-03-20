@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
+import RNS
+
 # Import Event for event bus publishing
 import sys
 import os
@@ -88,6 +90,7 @@ class ReticulumPeerService:
         
         # Peer tracking
         self._peers: Dict[str, ReticulumPeer] = {}
+        self._links: Dict[str, Any] = {}
         self._lock = threading.Lock()
         
         # State
@@ -348,3 +351,27 @@ class ReticulumPeerService:
     def is_running(self) -> bool:
         """Check if the service is running."""
         return self._running
+
+    def create_link(self, peer_id: str):
+        """Create an encrypted link to a peer."""
+        peer = self._peers.get(peer_id)
+        if not peer:
+            logger.warning(f"Cannot create link: peer {peer_id} not found")
+            return None
+        
+        try:
+            destination = peer.destination
+            if not destination:
+                logger.warning(f"Cannot create link: peer {peer_id} has no destination")
+                return None
+            
+            link = RNS.Link(destination)
+            logger.info(f"Created link to peer: {peer.name}")
+            return link
+        except Exception as e:
+            logger.error(f"Error creating link to peer {peer_id}: {e}")
+            return None
+
+    def get_link(self, peer_id: str):
+        """Get an existing link to a peer."""
+        return self._links.get(peer_id)

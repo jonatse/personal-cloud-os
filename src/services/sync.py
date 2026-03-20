@@ -91,11 +91,11 @@ class SyncEngine:
     Uses Reticulum links for encrypted peer-to-peer file transfer.
     """
     
-    def __init__(self, config, event_bus, discovery_service, peer_link_service=None):
+    def __init__(self, config, event_bus, reticulum_service, peer_link_service=None):
         """Initialize sync engine."""
         self.config = config
         self.event_bus = event_bus
-        self.discovery_service = discovery_service
+        self.reticulum_service = reticulum_service
         self.peer_link_service = peer_link_service
         
         self._running = False
@@ -226,15 +226,15 @@ class SyncEngine:
     
     async def sync_all(self):
         """Sync with all discovered peers."""
-        if not self.discovery_service.is_running():
-            logger.debug("No discovery service, skipping sync")
+        if not self.reticulum_service.is_running():
+            logger.debug("Reticulum not running, skipping sync")
             return
         
         if not self.peer_link_service:
             logger.warning("Peer link service not available, skipping sync")
             return
         
-        peers = self.discovery_service.get_peers()
+        peers = self.reticulum_service.get_peers()
         if not peers:
             logger.debug("No peers discovered, skipping sync")
             return

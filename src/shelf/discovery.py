@@ -1,4 +1,41 @@
 """
+=============================================================================
+DEPRECATED: Peer Discovery Service (Shelved on 2026-03-19)
+=============================================================================
+
+PURPOSE:
+    This was a higher-level abstraction layer that sat on top of 
+    Reticulum networking. It maintained a separate peer cache and 
+    handled peer timeout/expiration.
+
+WHY SHELVED:
+    The two-layer architecture (ReticulumPeerService + PeerDiscoveryService)
+    created sync issues where peers discovered by Reticulum weren't always
+    reflected in the Discovery layer due to event handling race conditions.
+    
+    The discovery logic is now integrated directly into the Reticulum 
+    network service, eliminating the need for a separate layer.
+
+WHAT IT DID:
+    - Subscribed to "peer.discovered" events from ReticulumPeerService
+    - Converted ReticulumPeer objects to simpler Peer objects
+    - Maintained local _peers dict with timeout/expiration logic
+    - Published "discovery.peer_found" events
+
+HOW TO REUSE:
+    If you need a separate discovery layer in the future, the pattern is:
+    1. Subscribe to events from the network service
+    2. Convert network-level peer objects to app-level objects
+    3. Add business logic (timeouts, filtering, etc.)
+    4. Publish higher-level events
+    
+    Make sure to handle event publish errors carefully to avoid 
+    the race conditions that caused issues here.
+
+=============================================================================
+"""
+
+"""
 Peer Discovery Service - Uses Reticulum ZeroTrust Networking
 
 This replaces the old UDP broadcast discovery with Reticulum-based discovery.
@@ -12,6 +49,8 @@ import logging
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+
+from core.events import Event
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +152,7 @@ class PeerDiscoveryService:
             logger.info(f"Peer discovered: {peer.name}")
             
             # Publish to our event bus
-            await self.event_bus.publish(type="discovery.peer_found", data=peer.to_dict(), source="discovery")
+            await self.event_bus.publish(Event(type="discovery.peer_found", data=peer.to_dict(), source="discovery"))
         except Exception as e:
             logger.error(f"[DEBUG] Exception in _on_peer_discovered: {e}")
             import traceback

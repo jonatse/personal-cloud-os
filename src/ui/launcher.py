@@ -73,11 +73,11 @@ class AppLauncher:
         ),
     ]
     
-    def __init__(self, config, event_bus, discovery_service, sync_engine, container_manager):
+    def __init__(self, config, event_bus, reticulum_service, sync_engine, container_manager):
         """Initialize app launcher."""
         self.config = config
         self.event_bus = event_bus
-        self.discovery_service = discovery_service
+        self.reticulum_service = reticulum_service
         self.sync_engine = sync_engine
         self.container_manager = container_manager
         
@@ -170,8 +170,9 @@ class AppLauncher:
         logger.info("Starting headless status loop...")
         while self._running:
             # Log peer status
-            peer_count = self.discovery_service.peer_count
-            peers = self.discovery_service.get_peers()
+            peers = self.reticulum_service.get_peers()
+            peer_count = len(peers)
+            # peers already fetched above
             if peer_count > 0:
                 peer_names = ", ".join([p.name for p in peers[:3]])
                 if len(peers) > 3:
@@ -323,14 +324,14 @@ class AppLauncher:
         # Update network status
         if hasattr(self, '_network_info'):
             # Check if Reticulum is running (via discovery service)
-            reticulum_running = self.discovery_service.is_running()
+            reticulum_running = self.reticulum_service.is_running()
             
             if reticulum_running:
                 # Try to get identity hash
                 try:
-                    identity = getattr(self.discovery_service, '_reticulum_service', None)
+                    identity = getattr(self.reticulum_service, '_identity_hash', None)
                     if identity:
-                        identity_hash = identity.get_identity_hash()
+                        identity_hash = identity
                         if identity_hash:
                             self._network_info.config(
                                 text=f"Reticulum: Online (Identity: {identity_hash[:16]}...)",
@@ -359,8 +360,8 @@ class AppLauncher:
         
         # Update peers label
         if hasattr(self, '_peers_label'):
-            peer_count = self.discovery_service.peer_count
-            peers = self.discovery_service.get_peers()
+            peer_count = len(self.reticulum_service.get_peers())
+            peers = self.reticulum_service.get_peers()
             
             if peer_count > 0:
                 peer_names = ", ".join([p.name for p in peers[:3]])

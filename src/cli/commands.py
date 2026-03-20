@@ -91,23 +91,25 @@ class CommandHandler:
         else:
             print(f"  {'Reticulum:':15} Offline")
         
-        # Peers - add debug output
-        discovery = getattr(self.app, 'discovery_service', None)
-        print(f"  [DEBUG] discovery service: {discovery}")
-        if discovery:
-            print(f"  [DEBUG] has get_peers: {hasattr(discovery, 'get_peers')}")
+        peers = []
+        peer_names = set()
+        
+        ret_service = getattr(self.app, 'reticulum_service', None)
+        if ret_service and hasattr(ret_service, 'get_peers'):
             try:
-                peers = discovery.get_peers() if hasattr(discovery, 'get_peers') else []
-                print(f"  [DEBUG] get_peers() returned: {peers} (len={len(peers)})")
+                for peer in ret_service.get_peers():
+                    if peer.name not in peer_names:
+                        peers.append(peer)
+                        peer_names.add(peer.name)
             except Exception as e:
-                print(f"  [DEBUG] get_peers() error: {e}")
-                peers = []
-            peer_count = len(peers)
-            print(f"  {'Peers:':15} {peer_count} connected")
-            for peer in peers[:3]:
-                print(f"    - {peer.name}")
-            if len(peers) > 3:
-                print(f"    (+{len(peers) - 3} more)")
+                print(f"  [DEBUG] ret_service.get_peers() error: {e}")
+        
+        peer_count = len(peers)
+        print(f"  {'Peers:':15} {peer_count} connected")
+        for peer in peers[:3]:
+            print(f"    - {peer.name}")
+        if len(peers) > 3:
+            print(f"    (+{len(peers) - 3} more)")
         
         # Sync
         sync = getattr(self.app, 'sync_engine', None)
@@ -132,20 +134,33 @@ class CommandHandler:
         print("  CONNECTED PEERS")
         print("─" * 50)
         
-        discovery = getattr(self.app, 'discovery_service', None)
-        if discovery:
-            peers = discovery.get_peers() if hasattr(discovery, 'get_peers') else []
-            if peers:
-                for peer in peers:
-                    print(f"  • {peer.name}")
-                    print(f"    Hash: {peer.hash[:20]}...")
-                    print(f"    Status: Online")
-                    print()
-            else:
-                print("  No peers discovered yet.")
-                print("  Make sure other devices are running Personal Cloud OS.")
+        ret_service = getattr(self.app, 'reticulum_service', None)
+        if not ret_service:
+            print("  No network service")
+            print("─" * 50 + "\n")
+            return True
+        
+        peers = []
+        peer_names = set()
+        
+        if ret_service and hasattr(ret_service, 'get_peers'):
+            try:
+                for peer in ret_service.get_peers():
+                    if peer.name not in peer_names:
+                        peers.append(peer)
+                        peer_names.add(peer.name)
+            except Exception as e:
+                print(f"  Error getting peers from reticulum: {e}")
+        
+        if peers:
+            for peer in peers:
+                print(f"  • {peer.name}")
+                print(f"    Hash: {peer.hash[:20]}...")
+                print(f"    Status: Online")
+                print()
         else:
-            print("  Discovery service not available.")
+            print("  No peers discovered yet.")
+            print("  Make sure other devices are running Personal Cloud OS.")
         
         print("─" * 50 + "\n")
         return True

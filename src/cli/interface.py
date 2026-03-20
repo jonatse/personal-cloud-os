@@ -1,6 +1,7 @@
 """Interactive CLI Interface for Personal Cloud OS."""
 import sys
 import os
+import logging
 from .commands import CommandHandler
 
 
@@ -65,9 +66,9 @@ class CLIInterface:
         """Print enhanced status bar with device, peers, and network info."""
         import socket
         import subprocess
+        logger = logging.getLogger(__name__)
         
         # Get services
-        discovery = getattr(self.app, 'discovery_service', None)
         ret_service = getattr(self.app, 'reticulum_service', None)
         device_mgr = getattr(self.app, 'device_manager', None)
         
@@ -91,15 +92,20 @@ class CLIInterface:
         
         # ========== PEERS ==========
         peers = []
+        peer_names = set()  # To avoid duplicates
         peer_count = 0
-        peer_count_raw = 0
-        if discovery and hasattr(discovery, 'get_peers'):
+        
+        # Query reticulum service for peers
+        if ret_service and hasattr(ret_service, 'get_peers'):
             try:
-                peers = discovery.get_peers()
-                peer_count_raw = len(peers)
-                peer_count = peer_count_raw
+                for peer in ret_service.get_peers():
+                    if peer.name not in peer_names:
+                        peers.append(peer)
+                        peer_names.add(peer.name)
             except Exception as e:
-                peer_count = f"Error: {e}"
+                logger.debug(f"Error getting peers from reticulum: {e}")
+        
+        peer_count = len(peers)
         
         # ========== NETWORKS - USED BY RETICULUM ==========
         # Query rnsd for active interfaces
@@ -158,8 +164,8 @@ for i in RNS.Transport.interfaces:
         print(f"  PEERS: {peer_count} connected")
         for peer in peers[:5]:
             print(f"    • {peer.name}")
-        if peer_count_raw > 5:
-            print(f"    (+{peer_count_raw - 5} more)")
+        if peer_count > 5:
+            print(f"    (+{peer_count - 5} more)")
         if peer_count == 0:
             print(f"    (waiting for peers...)")
         print("═" * width)

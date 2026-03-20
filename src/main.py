@@ -15,7 +15,6 @@ from core.logger import setup_logging, get_logger
 from core.device_manager import DeviceManager
 from core.version import __version__, __app_name__
 from services.reticulum_peer import ReticulumPeerService
-from services.discovery import PeerDiscoveryService
 from services.peer_link import PeerLinkService
 from services.sync import SyncEngine
 from container.manager import ContainerManager
@@ -58,10 +57,6 @@ class PersonalCloudOS:
         # Initialize Reticulum peer service (core networking)
         self.reticulum_service = ReticulumPeerService(self.config, event_bus)
         
-        # Initialize peer discovery (uses Reticulum)
-        self.discovery_service = PeerDiscoveryService(self.config, event_bus)
-        self.discovery_service.set_reticulum_service(self.reticulum_service)
-        
         # Initialize peer link service (encrypted P2P)
         self.peer_link_service = PeerLinkService(
             self.config, 
@@ -69,11 +64,11 @@ class PersonalCloudOS:
             self.reticulum_service
         )
         
-        # Initialize sync engine (uses peer links)
+        # Initialize sync engine (uses reticulum/peer links)
         self.sync_engine = SyncEngine(
             self.config, 
             event_bus, 
-            self.discovery_service,
+            self.reticulum_service,  # Changed from discovery_service
             self.peer_link_service
         )
         
@@ -119,12 +114,6 @@ class PersonalCloudOS:
             except Exception as e:
                 logger.error(f"Failed to start container: {e}")
         
-        # Start peer discovery
-        try:
-            await self.discovery_service.start()
-        except Exception as e:
-            logger.error(f"Failed to start discovery service: {e}")
-        
         # Start peer link service
         try:
             await self.peer_link_service.start()
@@ -165,12 +154,6 @@ class PersonalCloudOS:
             await self.peer_link_service.stop()
         except Exception as e:
             logger.error(f"Error stopping peer link service: {e}")
-        
-        # Stop discovery service
-        try:
-            await self.discovery_service.stop()
-        except Exception as e:
-            logger.error(f"Error stopping discovery service: {e}")
         
         # Stop Reticulum service
         try:
