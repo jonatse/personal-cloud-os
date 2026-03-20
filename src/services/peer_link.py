@@ -89,7 +89,7 @@ class PeerLinkService:
         with self._lock:
             for peer_id, link in self._links.items():
                 try:
-                    link.close()
+                    link.teardown()
                 except Exception as e:
                     logger.debug(f"Error closing link to {peer_id}: {e}")
             self._links.clear()
@@ -135,14 +135,14 @@ class PeerLinkService:
                 link = self._reticulum_service.create_link(peer_id)
                 
                 if link:
-                    # Register callbacks
-                    link.register_link_established_callback(
+                    # Register callbacks - using set_*_callback instead of register_*_callback
+                    link.set_link_established_callback(
                         self._on_link_established
                     )
-                    link.register_link_closed_callback(
+                    link.set_link_closed_callback(
                         self._on_link_closed
                     )
-                    link.register_packet_callback(
+                    link.set_packet_callback(
                         self._on_packet_received
                     )
                     
@@ -156,6 +156,8 @@ class PeerLinkService:
                     
             except Exception as e:
                 logger.error(f"Error connecting to peer {peer_id}: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
                 if peer_id in self._link_info:
                     self._link_info[peer_id].state = LinkState.ERROR
                 return False
@@ -165,7 +167,7 @@ class PeerLinkService:
         with self._lock:
             if peer_id in self._links:
                 try:
-                    self._links[peer_id].close()
+                    self._links[peer_id].teardown()
                 except Exception as e:
                     logger.debug(f"Error closing link: {e}")
                 
