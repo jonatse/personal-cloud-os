@@ -155,7 +155,7 @@ class CommandHandler:
         if peers:
             for peer in peers:
                 print(f"  • {peer.name}")
-                print(f"    Hash: {peer.hash[:20]}...")
+                print(f"    ID: {peer.id[:20]}...")
                 print(f"    Status: Online")
                 print()
         else:

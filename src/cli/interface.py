@@ -76,6 +76,11 @@ class CLIInterface:
             curses.wrapper(self._run_curses)
         except KeyboardInterrupt:
             pass
+        except Exception as e:
+            import traceback
+            # curses is already torn down here, safe to print normally
+            print(f"\nCLI crashed: {e}")
+            print(traceback.format_exc())
         finally:
             self.running = False
             print("\nCLI session ended.")
@@ -136,8 +141,15 @@ class CLIInterface:
                 self._history_idx = -1
                 if cmd:
                     self._history.append(cmd)
-                    self._write_output_line(f"\033[1mpcos ❯\033[0m {cmd}")
-                    result = self.command_handler.execute(cmd)
+                    self._write_output_line(f"pcos ❯ {cmd}")
+                    try:
+                        result = self.command_handler.execute(cmd)
+                    except Exception as e:
+                        import traceback
+                        self._write_output_line(f"  [ERROR] {e}")
+                        for line in traceback.format_exc().splitlines():
+                            self._write_output_line(f"  {line}")
+                        result = True  # don't exit on command errors
                     self._draw_output()
                     if not result:
                         self.running = False
