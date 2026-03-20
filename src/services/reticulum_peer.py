@@ -104,7 +104,8 @@ class ReticulumPeerService:
         )
         
         self._event_loop = None
-        
+        self._peer_timeout = config.get("reticulum.peer_timeout", 300)  # 5 min default
+
         logger.info("ReticulumPeerService initialized")
     
     async def start(self):
@@ -125,10 +126,19 @@ class ReticulumPeerService:
             
             # Start announce loop in background thread
             self._announce_thread = threading.Thread(
-                target=self._announce_loop, 
-                daemon=True
+                target=self._announce_loop,
+                daemon=True,
+                name="rns-announce"
             )
             self._announce_thread.start()
+
+            # Start peer expiry loop in background thread
+            self._expiry_thread = threading.Thread(
+                target=self._expiry_loop,
+                daemon=True,
+                name="rns-expiry"
+            )
+            self._expiry_thread.start()
             
             logger.info(f"Reticulum peer service started. Identity: {self._identity_hash[:16]}...")
             
@@ -265,20 +275,48 @@ class ReticulumPeerService:
         return identity
     
     def _announce_loop(self):
+        """Periodically announce presence to the network."""
         import json, socket
-        app_data = json.dumps({"name": socket.gethostname()}).encode()
+        hostname = socket.gethostname()
+        app_data = json.dumps({"name": hostname}).encode()
         while self._running:
             try:
                 if self._destination:
                     self._destination.announce(app_data=app_data)
-                    logger.debug(f"Announced presence as {socket.gethostname()}")
+                    logger.debug(f"Announced presence as {hostname}")
             except Exception as e:
                 logger.error(f"Announce error: {e}")
-            import time as _time
             for _ in range(self._announce_interval * 10):
                 if not self._running:
                     break
-                _time.sleep(0.1)
+                time.sleep(0.1)
+
+    def _expiry_loop(self):
+        """
+        Background thread: checks for peers that have gone silent.
+        A peer is considered lost if it hasn't announced in PEER_TIMEOUT seconds.
+        Fires peer.lost event and removes from _peers dict.
+        """
+        while self._running:
+            time.sleep(self._peer_timeout / 2)  # check at half the timeout interval
+            if not self._running:
+                break
+            expired = []
+            with self._lock:
+                for peer_id, peer in list(self._peers.items()):
+                    age = (datetime.now() - peer.last_seen).total_seconds()
+                    if age > self._peer_timeout:
+                        expired.append(peer_id)
+
+            for peer_id in expired:
+                with self._lock:
+                    peer = self._peers.pop(peer_id, None)
+                if peer:
+                    logger.info(f"Peer expired (silent {self._peer_timeout}s): {peer.name}")
+                    asyncio.run_coroutine_threadsafe(
+                        self._publish_event("peer.lost", {"id": peer_id, "name": peer.name}),
+                        self._event_loop
+                    )
     
     def _handle_announce(self, destination_hash, announced_identity, app_data):
         """Handle incoming peer announcement from Reticulum."""
@@ -301,6 +339,7 @@ class ReticulumPeerService:
             
             with self._lock:
                 is_new = peer_hash not in self._peers
+
                 # Build a proper RNS.Destination from the announced identity
                 # so that create_link() can pass it directly to RNS.Link()
                 try:
@@ -315,28 +354,39 @@ class ReticulumPeerService:
                     logger.warning(f"Could not build destination for {peer_name}: {de}")
                     peer_destination = None
 
-                peer = ReticulumPeer(
-                    id=peer_hash,
-                    name=peer_name,
-                    destination=peer_destination,
-                    status=PeerStatus.DISCOVERED,
-                    last_seen=datetime.now(),
-                    metadata={}
-                )
-                self._peers[peer_hash] = peer
-                
                 if is_new:
+                    # Brand new peer - create and publish peer.discovered
+                    peer = ReticulumPeer(
+                        id=peer_hash,
+                        name=peer_name,
+                        destination=peer_destination,
+                        status=PeerStatus.DISCOVERED,
+                        last_seen=datetime.now(),
+                        metadata={}
+                    )
+                    self._peers[peer_hash] = peer
                     logger.info(f"Discovered peer: {peer_name} ({peer_hash[:16]}...)")
                     asyncio.run_coroutine_threadsafe(
                         self._publish_event("peer.discovered", peer.to_dict()),
                         self._event_loop
                     )
                 else:
-                    logger.debug(f"Known peer updated: {peer_name}")
-                    asyncio.run_coroutine_threadsafe(
-                        self._publish_event("peer.updated", peer.to_dict()),
-                        self._event_loop
-                    )
+                    # Known peer - only update last_seen silently.
+                    # Only publish peer.updated if name or status actually changed.
+                    existing = self._peers[peer_hash]
+                    changed = existing.name != peer_name
+                    existing.last_seen = datetime.now()
+                    if peer_destination:
+                        existing.destination = peer_destination
+                    if changed:
+                        existing.name = peer_name
+                        logger.info(f"Peer changed: {peer_hash[:16]} name={peer_name}")
+                        asyncio.run_coroutine_threadsafe(
+                            self._publish_event("peer.updated", existing.to_dict()),
+                            self._event_loop
+                        )
+                    else:
+                        logger.debug(f"Peer heartbeat: {peer_name}")
         except Exception as e:
             logger.error(f"Error handling announce: {e}")
             import traceback

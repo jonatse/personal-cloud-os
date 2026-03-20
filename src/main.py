@@ -15,6 +15,7 @@ from core.logger import setup_logging, get_logger
 from core.device_manager import DeviceManager
 from core.version import __version__, __app_name__
 from services.reticulum_peer import ReticulumPeerService
+from services.i2p_manager import I2PManager
 from services.peer_link import PeerLinkService
 from services.sync import SyncEngine
 from container.manager import ContainerManager
@@ -56,6 +57,9 @@ class PersonalCloudOS:
         
         # Initialize Reticulum peer service (core networking)
         self.reticulum_service = ReticulumPeerService(self.config, event_bus)
+
+        # Initialize I2P manager (internet tunneling — gracefully skipped if i2pd not installed)
+        self.i2p_manager = I2PManager(self.config)
         
         # Initialize peer link service (encrypted P2P)
         self.peer_link_service = PeerLinkService(
@@ -100,7 +104,13 @@ class PersonalCloudOS:
         logger.info("Starting services...")
         self._running = True
         
-        # Start Reticulum networking first (foundation for everything)
+        # Start I2P first so Reticulum config is patched before RNS reads it
+        try:
+            await self.i2p_manager.start()
+        except Exception as e:
+            logger.error(f"Failed to start I2P manager: {e}")
+
+        # Start Reticulum networking (foundation for everything)
         try:
             await self.reticulum_service.start()
         except Exception as e:
@@ -160,6 +170,12 @@ class PersonalCloudOS:
             await self.reticulum_service.stop()
         except Exception as e:
             logger.error(f"Error stopping Reticulum service: {e}")
+
+        # Stop I2P manager
+        try:
+            await self.i2p_manager.stop()
+        except Exception as e:
+            logger.error(f"Error stopping I2P manager: {e}")
         
         # Stop container
         try:
@@ -180,10 +196,11 @@ class PersonalCloudOS:
             logger.info("Log file too large, truncating...")
             open(log_file, 'w').close()
         
-        # Create event loop
+        # Create event loop — exposed as self._loop so CLI quit can schedule stop()
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        
+        self._loop = loop
+
         # Start services
         loop.run_until_complete(self.start())
         

@@ -1,0 +1,260 @@
+"""
+I2P Manager - Decentralized Internet Tunneling for Personal Cloud OS
+
+Manages the i2pd daemon and configures Reticulum to use I2P as a transport,
+enabling peer discovery and communication over the internet without any
+central server, VPN provider, or static IP.
+
+Architecture:
+    i2pd (daemon) ← managed by this module
+        ↓
+    Reticulum I2PInterface ← configured automatically
+        ↓
+    ReticulumPeerService ← discovers peers anywhere on internet
+
+How I2P works with Reticulum:
+    - Each device runs an i2pd router that connects to the I2P network
+    - i2pd creates an inbound tunnel (SAM bridge on 127.0.0.1:7656)
+    - Reticulum connects to that SAM bridge via I2PInterface
+    - Peers anywhere on the internet can discover each other through I2P
+    - All traffic is onion-routed through I2P — encrypted and anonymous
+    - No port-forwarding or static IP needed
+
+Requirements:
+    - i2pd installed: sudo apt install i2pd
+    - OR: i2pd binary in PATH
+
+Fallback behaviour:
+    - If i2pd is not installed, logs a clear message and continues LAN-only
+    - LAN discovery (AutoInterface) always works regardless of I2P status
+    - App never fails to start due to missing i2pd
+
+Usage:
+    manager = I2PManager(config)
+    await manager.start()          # starts i2pd if needed, patches RNS config
+    manager.is_available()         # True if I2P is running and SAM is ready
+    await manager.stop()           # stops i2pd if we started it
+"""
+import asyncio
+import logging
+import os
+import subprocess
+import time
+import socket
+import threading
+import configparser
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+# i2pd SAM bridge default address — Reticulum connects here
+SAM_HOST = "127.0.0.1"
+SAM_PORT = 7656
+
+# How long to wait for i2pd SAM bridge to become available
+SAM_STARTUP_TIMEOUT = 60   # seconds
+
+# Reticulum config path
+RNS_CONFIG_PATH = os.path.expanduser("~/.reticulum/config")
+
+# I2P interface name in Reticulum config
+RNS_I2P_SECTION = "PCOS I2P Interface"
+
+
+class I2PManager:
+    """
+    Manages i2pd lifecycle and Reticulum I2P interface configuration.
+
+    On start():
+        1. Check if i2pd is installed
+        2. Check if i2pd is already running (SAM bridge reachable)
+        3. If not running, start i2pd as a subprocess
+        4. Wait for SAM bridge to become available
+        5. Patch ~/.reticulum/config to add I2PInterface if not present
+        6. Signal Reticulum to reload (or note that restart is needed)
+
+    On stop():
+        1. If we started i2pd, stop it
+        2. Leave Reticulum config as-is (I2P section stays for next run)
+    """
+
+    def __init__(self, config):
+        self.config       = config
+        self._process     = None   # subprocess.Popen if we started i2pd
+        self._available   = False  # True once SAM bridge is confirmed up
+        self._running     = False
+        self._we_started  = False  # True if we spawned i2pd ourselves
+
+    # ------------------------------------------------------------------ #
+    # Public API
+    # ------------------------------------------------------------------ #
+
+    async def start(self):
+        """Start I2P support. Non-fatal if i2pd is not installed."""
+        self._running = True
+        logger.info("I2PManager: starting...")
+
+        # Step 1: Is i2pd installed?
+        i2pd_bin = self._find_i2pd()
+        if not i2pd_bin:
+            logger.warning(
+                "I2P: i2pd not found. Internet peer discovery disabled.\n"
+                "  To enable: sudo apt install i2pd\n"
+                "  LAN discovery still works without i2pd."
+            )
+            return
+
+        logger.info(f"I2P: found i2pd at {i2pd_bin}")
+
+        # Step 2: Is SAM bridge already up? (i2pd already running)
+        if self._sam_reachable():
+            logger.info("I2P: SAM bridge already available (i2pd already running)")
+            self._available = True
+        else:
+            # Step 3: Start i2pd ourselves
+            started = await self._start_i2pd(i2pd_bin)
+            if not started:
+                logger.warning("I2P: failed to start i2pd — internet discovery disabled")
+                return
+
+        # Step 4: Patch Reticulum config
+        self._patch_rns_config()
+
+        logger.info(
+            "I2P: ready. Reticulum will use I2P for internet peer discovery.\n"
+            "  Note: First connection may take 2-5 minutes while I2P builds tunnels."
+        )
+
+    async def stop(self):
+        """Stop i2pd if we started it."""
+        self._running = False
+        if self._process and self._we_started:
+            logger.info("I2P: stopping i2pd...")
+            try:
+                self._process.terminate()
+                self._process.wait(timeout=5)
+            except Exception as e:
+                logger.debug(f"I2P: stop error: {e}")
+                try:
+                    self._process.kill()
+                except Exception:
+                    pass
+        self._available = False
+        logger.info("I2P: stopped")
+
+    def is_available(self) -> bool:
+        """True if I2P SAM bridge is up and ready for connections."""
+        return self._available
+
+    def status(self) -> dict:
+        """Return current I2P status for display."""
+        return {
+            "available":   self._available,
+            "sam_host":    SAM_HOST,
+            "sam_port":    SAM_PORT,
+            "we_started":  self._we_started,
+        }
+
+    # ------------------------------------------------------------------ #
+    # i2pd lifecycle
+    # ------------------------------------------------------------------ #
+
+    def _find_i2pd(self) -> str | None:
+        """Find i2pd binary in PATH or common locations."""
+        import shutil
+        # Check PATH first
+        found = shutil.which("i2pd")
+        if found:
+            return found
+        # Common install locations
+        for path in ["/usr/sbin/i2pd", "/usr/bin/i2pd", "/usr/local/bin/i2pd"]:
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                return path
+        return None
+
+    async def _start_i2pd(self, binary: str) -> bool:
+        """
+        Start i2pd as a background subprocess.
+        Waits up to SAM_STARTUP_TIMEOUT seconds for SAM bridge to come up.
+        Returns True on success.
+        """
+        logger.info("I2P: starting i2pd daemon...")
+        try:
+            self._process = subprocess.Popen(
+                [binary, "--daemon=false", "--log=stdout", "--loglevel=warn"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            self._we_started = True
+            logger.info(f"I2P: i2pd started (pid {self._process.pid})")
+        except Exception as e:
+            logger.error(f"I2P: could not launch i2pd: {e}")
+            return False
+
+        # Wait for SAM bridge to become available
+        logger.info(f"I2P: waiting up to {SAM_STARTUP_TIMEOUT}s for SAM bridge...")
+        deadline = time.time() + SAM_STARTUP_TIMEOUT
+        while time.time() < deadline:
+            if self._sam_reachable():
+                self._available = True
+                logger.info("I2P: SAM bridge is up")
+                return True
+            await asyncio.sleep(2)
+
+        logger.warning("I2P: SAM bridge did not come up in time — continuing without I2P")
+        return False
+
+    def _sam_reachable(self) -> bool:
+        """Check if the i2pd SAM bridge is accepting connections."""
+        try:
+            with socket.create_connection((SAM_HOST, SAM_PORT), timeout=2):
+                return True
+        except (ConnectionRefusedError, OSError, TimeoutError):
+            return False
+
+    # ------------------------------------------------------------------ #
+    # Reticulum config patching
+    # ------------------------------------------------------------------ #
+
+    def _patch_rns_config(self):
+        """
+        Add an I2PInterface section to ~/.reticulum/config if not present.
+
+        Reticulum config uses an INI-like format with nested sections.
+        We read the file as text and append the interface block if the
+        section name doesn't already exist — avoids parsing the custom
+        nested format which configparser doesn't handle cleanly.
+        """
+        config_path = Path(RNS_CONFIG_PATH)
+        if not config_path.exists():
+            logger.warning(f"I2P: Reticulum config not found at {config_path}")
+            return
+
+        content = config_path.read_text()
+
+        # Already configured?
+        if RNS_I2P_SECTION in content:
+            logger.debug("I2P: Reticulum config already has I2P interface")
+            return
+
+        i2p_block = f"""
+  [[{RNS_I2P_SECTION}]]
+    type = I2PInterface
+    enabled = yes
+    peers = []
+
+"""
+        # Append after the [interfaces] section opener
+        if "[interfaces]" in content:
+            content = content.replace(
+                "[interfaces]",
+                "[interfaces]" + i2p_block,
+                1
+            )
+            config_path.write_text(content)
+            logger.info(
+                "I2P: added I2PInterface to ~/.reticulum/config\n"
+                "  Reticulum will use I2P on next startup."
+            )
+        else:
+            logger.warning("I2P: could not find [interfaces] in Reticulum config")

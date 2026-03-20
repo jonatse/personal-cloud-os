@@ -23,7 +23,7 @@ class CommandHandler:
             'restart': self.cmd_restart,
             'clear': self.cmd_clear,
             'exit': self.cmd_exit,
-            'quit': self.cmd_exit,
+            'quit': self.cmd_quit,
         }
     
     def get_commands(self) -> Dict[str, str]:
@@ -308,7 +308,22 @@ class CommandHandler:
         except Exception as e:
             print(f"  Audio: error ({e})")
 
-        print("─" * W + "\n")
+        # ── I2P status ──────────────────────────────────────────────
+        i2p = getattr(self.app, 'i2p_manager', None)
+        if i2p:
+            status = i2p.status()
+            state  = "Available ✓" if status["available"] else "Not available"
+            origin = "started by pcos" if status["we_started"] else "external"
+            print(f"  I2P (internet tunneling)")
+            print(f"    State   : {state}")
+            if status["available"]:
+                print(f"    SAM     : {status['sam_host']}:{status['sam_port']}")
+                print(f"    i2pd    : {origin}")
+            else:
+                print(f"    Install : sudo apt install i2pd")
+            print("─" * W)
+
+        print("")
         return True
     
     def cmd_device(self, args) -> bool:
@@ -394,7 +409,19 @@ class CommandHandler:
         return True
     
     def cmd_exit(self, args) -> bool:
-        """Exit CLI (keep running)."""
+        """Exit CLI, keep app running in background."""
         print("\nCLI closed. Personal Cloud OS continues running in background.")
-        print("Click the tray icon to reopen CLI.\n")
+        print("Type 'python3 main.py --cli' to reopen.\n")
+        return False
+
+    def cmd_quit(self, args) -> bool:
+        """Stop the application and exit."""
+        print("\nStopping Personal Cloud OS...")
+        import asyncio
+        loop = getattr(self.app, '_loop', None)
+        if loop and loop.is_running():
+            asyncio.run_coroutine_threadsafe(self.app.stop(), loop)
+        else:
+            # Fallback: set running flag so background loop exits
+            self.app._running = False
         return False
