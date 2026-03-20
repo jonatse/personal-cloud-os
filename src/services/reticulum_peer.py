@@ -480,6 +480,7 @@ class ReticulumPeerService:
                         logger.info(f"Wiring up pending inbound link for {peer_name}")
                         pls = self._peer_link_service
                         if pls is not None:
+                            call_established = False
                             with pls._lock:
                                 if peer_hash not in pls._links:
                                     from services.peer_link import LinkInfo, LinkState
@@ -487,13 +488,16 @@ class ReticulumPeerService:
                                     pls._link_info[peer_hash] = LinkInfo(
                                         peer_id=peer_hash, peer_name=peer_name)
                                     pls._link_info[peer_hash].state = LinkState.CONNECTING
-                                    pls._on_link_established(pending_link)
+                                    call_established = True
                                 else:
                                     pending_link.set_packet_callback(
                                         lambda msg, pkt, pid=peer_hash:
                                             pls._on_packet_received(pid, msg, pkt)
                                     )
                                     logger.debug(f"Packet callback registered on pending inbound link for {peer_name}")
+                            # Call outside the lock to avoid deadlock
+                            if call_established:
+                                pls._on_link_established(pending_link)
                 else:
                     # Known peer - only update last_seen silently.
                     # Only publish peer.updated if name or status actually changed.
