@@ -185,7 +185,7 @@ technical rationale and dependency audit.
       This means vendored packages are used instead of system packages.
       Falls back to system if vendor copy is missing (graceful degradation).
 
-- [ ] **S6** Install build dependencies on desktop (one time only)
+- [x] **S6** Install build dependencies on desktop (one time only)
       ```bash
       sudo apt install cmake libboost-dev libboost-program-options-dev \
                        libboost-filesystem-dev libboost-chrono-dev \
