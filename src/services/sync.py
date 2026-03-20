@@ -106,6 +106,7 @@ class SyncEngine:
         # File tracking
         self._local_files: Dict[str, FileInfo] = {}
         self._remote_files: Dict[str, Dict[str, FileInfo]] = {}  # peer_id -> {path -> FileInfo}
+        self._receiving_files: Dict[str, int] = {}               # path -> chunk count
         self._sync_dir = os.path.expanduser("~/Sync")
         
         # Sync settings
@@ -416,31 +417,29 @@ class SyncEngine:
         filepath = message.get("path")
         chunk_num = message.get("chunk", 0)
         data_hex = message.get("data", "")
-        
+
         if not filepath:
             return
-        
+
         full_path = os.path.join(self._sync_dir, filepath)
-        
-        # Ensure directory exists
-        os.makedirs(os.path.dirname(full_path), exist_ok=True)
-        
+
+        # Ensure parent directory exists (guard against empty dirname for root-level files)
+        parent_dir = os.path.dirname(full_path)
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
+
         try:
-            # Decode hex data
             chunk_data = bytes.fromhex(data_hex)
-            
-            # Write in append mode for chunks
-            mode = 'ab' if chunk_num > 0 else 'wb'
+
+            # Truncate on first chunk, append on subsequent chunks
+            mode = 'wb' if chunk_num == 0 else 'ab'
             with open(full_path, mode) as f:
                 f.write(chunk_data)
-            
-            # If first chunk, we need to track it
-            if chunk_num == 0:
-                self._receiving_files = getattr(self, '_receiving_files', {})
-                self._receiving_files[filepath] = 0
-            
+
+            # Track received chunk count; safe for any chunk_num
+            self._receiving_files.setdefault(filepath, 0)
             self._receiving_files[filepath] += 1
-            
+
         except Exception as e:
             logger.error(f"Error receiving file {filepath}: {e}")
     
