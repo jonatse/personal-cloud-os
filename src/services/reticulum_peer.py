@@ -366,10 +366,17 @@ class ReticulumPeerService:
                     )
                     self._peers[peer_hash] = peer
                     logger.info(f"Discovered peer: {peer_name} ({peer_hash[:16]}...)")
-                    asyncio.run_coroutine_threadsafe(
-                        self._publish_event("peer.discovered", peer.to_dict()),
-                        self._event_loop
-                    )
+                    logger.debug(f"Attempting to publish peer.discovered event for {peer_name}")
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            self._publish_event("peer.discovered", peer.to_dict()),
+                            self._event_loop
+                        )
+                        logger.debug("Successfully scheduled peer.discovered event")
+                    except Exception as e:
+                        logger.error(f"Failed to publish peer.discovered event: {e}")
+                        import traceback
+                        logger.debug(traceback.format_exc())
                 else:
                     # Known peer - only update last_seen silently.
                     # Only publish peer.updated if name or status actually changed.

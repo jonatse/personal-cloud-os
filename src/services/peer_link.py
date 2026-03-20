@@ -8,7 +8,9 @@ Provides encrypted peer-to-peer communication using Reticulum links.
 """
 import asyncio
 import logging
+import RNS
 import threading
+import json
 from typing import Dict, List, Optional, Callable, Any
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -185,14 +187,26 @@ class PeerLinkService:
         Returns True if sent successfully, False otherwise.
         """
         with self._lock:
-            link = self._links.get(peer_id)
-            
-            if not link:
+            if peer_id not in self._links:
                 logger.warning(f"No link to peer: {peer_id}")
                 return False
+                
+            link = self._links[peer_id]
             
             try:
-                link.send(data)
+                # Check if we have a buffer for this peer
+                if peer_id not in getattr(self, '_buffers', {}):
+                    # Create a channel and bidirectional buffer
+                    channel = link.get_channel()
+                    buffer = RNS.Buffer.create_bidirectional_buffer(0, 0, channel, self._on_buffer_ready)
+                    if not hasattr(self, '_buffers'):
+                        self._buffers = {}
+                    self._buffers[peer_id] = buffer
+                    logger.debug(f"Created buffer for peer {peer_id}")
+                
+                # Send data
+                self._buffers[peer_id].write(data)
+                self._buffers[peer_id].flush()
                 
                 # Update stats
                 if peer_id in self._link_info:
@@ -202,7 +216,14 @@ class PeerLinkService:
                 return True
             except Exception as e:
                 logger.error(f"Error sending to peer {peer_id}: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
                 return False
+    
+    def _on_buffer_ready(self, ready_bytes: int):
+        """Callback when buffer has data available."""
+        # We should handle this via the packet callback or link callbacks
+        logger.debug(f"Buffer has {ready_bytes} bytes available")
     
     def send_text_to_peer(self, peer_id: str, text: str) -> bool:
         """Send text string to a peer."""
@@ -210,8 +231,12 @@ class PeerLinkService:
     
     def send_json_to_peer(self, peer_id: str, data: dict) -> bool:
         """Send JSON-serializable data to a peer."""
-        import json
-        return self.send_to_peer(peer_id, json.dumps(data).encode('utf-8'))
+        try:
+            json_str = json.dumps(data)
+            return self.send_to_peer(peer_id, json_str.encode('utf-8'))
+        except Exception as e:
+            logger.error(f"Error encoding JSON for peer {peer_id}: {e}")
+            return False
     
     def broadcast(self, data: bytes) -> int:
         """
@@ -223,7 +248,20 @@ class PeerLinkService:
         with self._lock:
             for peer_id, link in self._links.items():
                 try:
-                    link.send(data)
+                    # Check if we have a buffer for this peer
+                    if peer_id not in getattr(self, '_buffers', {}):
+                        # Create a channel and bidirectional buffer
+                        channel = link.get_channel()
+                        buffer = RNS.Buffer.create_bidirectional_buffer(0, 0, channel, self._on_buffer_ready)
+                        if not hasattr(self, '_buffers'):
+                            self._buffers = {}
+                        self._buffers[peer_id] = buffer
+                        logger.debug(f"Created buffer for peer {peer_id}")
+                    
+                    # Send data
+                    self._buffers[peer_id].write(data)
+                    self._buffers[peer_id].flush()
+                    
                     count += 1
                 except Exception as e:
                     logger.debug(f"Error broadcasting to {peer_id}: {e}")
