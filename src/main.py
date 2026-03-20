@@ -123,11 +123,21 @@ class PersonalCloudOS:
         """Setup signal handlers for graceful shutdown."""
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
-    
+
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals."""
         logger.info(f"Received signal {signum}, shutting down...")
-        asyncio.create_task(self.stop())
+        # Schedule stop() onto the running event loop from the signal handler
+        # (signal handlers run in the main thread; the loop may be running there too)
+        if self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(
+                lambda: self._loop.create_task(self._stop_and_exit())
+            )
+
+    async def _stop_and_exit(self):
+        """Stop all services then stop the event loop."""
+        await self.stop()
+        self._loop.stop()
     
     async def start(self):
         """Start all services."""
@@ -218,9 +228,6 @@ class PersonalCloudOS:
             logger.error(f"Error stopping container: {e}")
         
         logger.info("All services stopped!")
-        
-        # Exit
-        sys.exit(0)
     
     def run(self):
         """Run the application."""
@@ -239,26 +246,35 @@ class PersonalCloudOS:
         loop.run_until_complete(self.start())
         
         if self.cli_mode:
-            # CLI mode - run interactive CLI
+            # CLI mode - run interactive CLI on the main thread while the loop
+            # keeps spinning in a background thread so RNS callbacks work.
+            import threading
+            loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
+            loop_thread.start()
             cli = CLIInterface(self)
             try:
                 cli.start()
             except KeyboardInterrupt:
                 pass
+            # Signal the loop to stop
+            loop.call_soon_threadsafe(
+                lambda: loop.create_task(self._stop_and_exit())
+            )
+            loop_thread.join(timeout=10)
         else:
-            # Background mode - just wait
+            # Background mode — keep the event loop running so that coroutines
+            # scheduled by RNS background threads (via run_coroutine_threadsafe)
+            # are actually executed.
             logger.info("Running in background. Use CLI to manage.")
             logger.info("  python main.py --cli    # Open CLI")
             logger.info("  python main.py --status # Show status and exit")
-            
             try:
-                while self._running:
-                    signal.pause()
+                loop.run_forever()
             except KeyboardInterrupt:
                 pass
-        
-        # Stop services
-        loop.run_until_complete(self.stop())
+            # run_forever() returned (either from signal handler or KeyboardInterrupt)
+            loop.run_until_complete(self.stop())
+
         loop.close()
 
 
