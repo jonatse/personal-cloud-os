@@ -333,9 +333,10 @@ class ReticulumPeerService:
         Stores the link and forwards to PeerLinkService for Channel/Buffer setup.
         """
         try:
-            remote_hash = link.remote_identity.hash.hex() if link.remote_identity else None
+            remote_id = link.get_remote_identity()
+            remote_hash = remote_id.hash.hex() if remote_id else None
             if not remote_hash:
-                logger.warning("Inbound link has no remote_identity, ignoring")
+                logger.warning("Inbound link has no remote identity yet, ignoring")
                 return
 
             # Find which peer this link is from by matching their identity hash
