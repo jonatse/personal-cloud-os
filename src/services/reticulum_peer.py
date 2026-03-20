@@ -159,7 +159,7 @@ class ReticulumPeerService:
 
         # Announce handler so we discover other PCOS devices
         class _AnnounceHandler:
-            aspect_filter = f"{APP_NAME}.{PEER_ASPECT}"
+            aspect_filter = None  # Receive all announces, filter in received_announce
             def __init__(self, svc): self.svc = svc
             def received_announce(self, dest_hash, identity, app_data):
                 self.svc._on_announce(dest_hash, identity, app_data)
@@ -222,6 +222,18 @@ class ReticulumPeerService:
     def _on_announce(self, dest_hash, identity, app_data):
         """Called by RNS when another PCOS device announces."""
         peer_hash = dest_hash.hex() if hasattr(dest_hash, "hex") else str(dest_hash)
+
+        # Filter: verify this announce is for our app aspect
+        expected_dest = RNS.Destination(
+            identity,
+            RNS.Destination.OUT,
+            RNS.Destination.SINGLE,
+            APP_NAME,
+            PEER_ASPECT,
+        )
+        expected_hash = expected_dest.hash.hex() if hasattr(expected_dest.hash, "hex") else str(expected_dest.hash)
+        if peer_hash != expected_hash:
+            return
 
         # Ignore our own announces
         if peer_hash == self._destination.hash.hex():
