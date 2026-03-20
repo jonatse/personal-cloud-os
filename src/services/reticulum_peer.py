@@ -13,6 +13,8 @@ Key features:
 import asyncio
 import logging
 import os
+import sys
+import time
 import threading
 from typing import Dict, List, Optional, Callable, Any
 from dataclasses import dataclass, field
@@ -22,8 +24,6 @@ from enum import Enum
 import RNS
 
 # Import Event for event bus publishing
-import sys
-import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.events import Event
 
@@ -145,7 +145,7 @@ class ReticulumPeerService:
     
     async def stop(self):
         """Stop the Reticulum peer service."""
-        if self._running:
+        if not self._running:
             return
         
         logger.info("Stopping Reticulum peer service...")
@@ -274,10 +274,11 @@ class ReticulumPeerService:
                     logger.debug(f"Announced presence as {socket.gethostname()}")
             except Exception as e:
                 logger.error(f"Announce error: {e}")
+            import time as _time
             for _ in range(self._announce_interval * 10):
                 if not self._running:
                     break
-                threading.Event().wait(0.1)
+                _time.sleep(0.1)
     
     def _handle_announce(self, destination_hash, announced_identity, app_data):
         """Handle incoming peer announcement from Reticulum."""
@@ -300,10 +301,24 @@ class ReticulumPeerService:
             
             with self._lock:
                 is_new = peer_hash not in self._peers
+                # Build a proper RNS.Destination from the announced identity
+                # so that create_link() can pass it directly to RNS.Link()
+                try:
+                    peer_destination = RNS.Destination(
+                        announced_identity,
+                        RNS.Destination.OUT,
+                        RNS.Destination.SINGLE,
+                        APP_NAME,
+                        PEER_DESTINATION
+                    )
+                except Exception as de:
+                    logger.warning(f"Could not build destination for {peer_name}: {de}")
+                    peer_destination = None
+
                 peer = ReticulumPeer(
                     id=peer_hash,
                     name=peer_name,
-                    destination=announced_identity,
+                    destination=peer_destination,
                     status=PeerStatus.DISCOVERED,
                     last_seen=datetime.now(),
                     metadata={}
@@ -366,6 +381,7 @@ class ReticulumPeerService:
                 return None
             
             link = RNS.Link(destination)
+            self._links[peer_id] = link
             logger.info(f"Created link to peer: {peer.name}")
             return link
         except Exception as e:

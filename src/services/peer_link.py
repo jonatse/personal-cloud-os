@@ -9,7 +9,7 @@ Provides encrypted peer-to-peer communication using Reticulum links.
 import asyncio
 import logging
 import threading
-from typing import Dict, Optional, Callable, Any
+from typing import Dict, List, Optional, Callable, Any
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -258,23 +258,26 @@ class PeerLinkService:
     
     def _on_link_closed(self, link):
         """Called when a link is closed."""
+        # Find the peer_id first, then mutate — avoids RuntimeError from
+        # mutating dict during iteration (Bug B4)
+        peer_id = None
         with self._lock:
-            for peer_id, l in self._links.items():
+            for pid, l in self._links.items():
                 if l == link:
-                    del self._links[peer_id]
-                    
-                    if peer_id in self._link_info:
-                        self._link_info[peer_id].state = LinkState.DISCONNECTED
-                    
-                    logger.info(f"Link closed with peer: {peer_id}")
-                    
-                    # Notify callbacks
-                    for cb in self._link_callbacks:
-                        try:
-                            cb(peer_id, LinkState.DISCONNECTED)
-                        except Exception as e:
-                            logger.error(f"Link callback error: {e}")
+                    peer_id = pid
                     break
+            if peer_id:
+                del self._links[peer_id]
+                if peer_id in self._link_info:
+                    self._link_info[peer_id].state = LinkState.DISCONNECTED
+
+        if peer_id:
+            logger.info(f"Link closed with peer: {peer_id}")
+            for cb in self._link_callbacks:
+                try:
+                    cb(peer_id, LinkState.DISCONNECTED)
+                except Exception as e:
+                    logger.error(f"Link callback error: {e}")
     
     def _on_packet_received(self, packet):
         """Called when data is received."""
