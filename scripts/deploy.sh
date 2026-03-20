@@ -1,107 +1,345 @@
 #!/usr/bin/env bash
-# deploy.sh — clean, push, pull, restart both devices in one command
+# deploy.sh — PCOS deploy orchestrator
+#
+# Phases (all phases run in parallel where possible):
+#   1. Version bump (optional)
+#   2. Git commit + push           ← parallel with Phase 3
+#   3. Kill both machines          ← parallel with Phase 2
+#   4. Wait: push confirmed + both dead
+#   5. Pull both machines          ← parallel
+#   6. Wait: both pulled + version verified
+#   7. Restart both machines       ← parallel
+#   8. Wait: both healthy + version in log confirmed
+#   9. Tail both logs live
 #
 # Usage:
-#   ./scripts/deploy.sh                   # normal deploy
-#   ./scripts/deploy.sh --clear-logs      # also wipe logs on both sides
-#   ./scripts/deploy.sh --bump-version    # increment patch version first
+#   ./scripts/deploy.sh                    # deploy current code
+#   ./scripts/deploy.sh --bump-version     # increment patch, then deploy
+#   ./scripts/deploy.sh --no-tail          # deploy and exit (no log tail)
 #
-# Requires: SSH access to laptop as jonathansoberg@192.168.1.82
-#           The project lives at ~/Projects/personal-cloud-os on the laptop
+# Requirements:
+#   SSH passwordless access to jonathansoberg@192.168.1.82
+#   scripts/device_kill.sh, device_pull.sh, device_restart.sh in same dir
 
 set -euo pipefail
 
+# ── Config ────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT="$(dirname "$SCRIPT_DIR")"
+LOCAL_DIR="$PROJECT"
+
 LAPTOP_USER="jonathansoberg"
 LAPTOP_HOST="192.168.1.82"
 LAPTOP_DIR="~/Projects/personal-cloud-os"
-LOG_PATH="~/.local/share/pcos/logs/app.log"
 
-CLEAR_LOGS=false
+LOG_LOCAL="$HOME/.local/share/pcos/logs/app.log"
+LOG_LAPTOP="~/.local/share/pcos/logs/app.log"
+DEPLOY_DIR_LOCAL="$HOME/.local/share/pcos/deploy"
+DEPLOY_DIR_LAPTOP="~/.local/share/pcos/deploy"
+
+POLL_INTERVAL=2
+PHASE_TIMEOUT=60    # seconds before a phase is declared failed
+
+# ── Flags ─────────────────────────────────────────────────────────────
 BUMP_VERSION=false
+NO_TAIL=false
 
 for arg in "$@"; do
   case $arg in
-    --clear-logs)    CLEAR_LOGS=true ;;
-    --bump-version)  BUMP_VERSION=true ;;
+    --bump-version) BUMP_VERSION=true ;;
+    --no-tail)      NO_TAIL=true ;;
   esac
 done
 
-echo "═══════════════════════════════════════════"
-echo "  PCOS Deploy"
-echo "═══════════════════════════════════════════"
+# ── Colours ───────────────────────────────────────────────────────────
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 
-# ── 1. Optional version bump ──────────────────────────────────────────
+ok()   { echo -e "${GREEN}  ✓ $*${RESET}"; }
+info() { echo -e "${CYAN}  ▸ $*${RESET}"; }
+warn() { echo -e "${YELLOW}  ⚠ $*${RESET}"; }
+fail() { echo -e "${RED}  ✗ $*${RESET}"; exit 1; }
+hdr()  { echo -e "\n${BOLD}${CYAN}══ $* ${RESET}"; }
+
+# ── Helpers ───────────────────────────────────────────────────────────
+
+# Upload scripts to laptop once (idempotent)
+upload_scripts() {
+  info "Syncing scripts to laptop..."
+  scp -q "$SCRIPT_DIR/device_kill.sh" \
+         "$SCRIPT_DIR/device_pull.sh" \
+         "$SCRIPT_DIR/device_restart.sh" \
+         "$LAPTOP_USER@$LAPTOP_HOST:$LAPTOP_DIR/scripts/"
+  ssh "$LAPTOP_USER@$LAPTOP_HOST" \
+    "chmod +x $LAPTOP_DIR/scripts/device_kill.sh \
+               $LAPTOP_DIR/scripts/device_pull.sh \
+               $LAPTOP_DIR/scripts/device_restart.sh"
+  ok "Scripts uploaded to laptop"
+}
+
+# Poll a remote JSON status file until it contains "ok" or timeout
+# Usage: wait_for_status <host_label> <ssh_dest> <remote_status_file> <timeout>
+# Returns 0 on ok, 1 on timeout/error
+wait_for_status() {
+  local label="$1" ssh_dest="$2" remote_file="$3" timeout="$4"
+  local elapsed=0
+  while [ "$elapsed" -lt "$timeout" ]; do
+    local result
+    result=$(ssh "$ssh_dest" "cat $remote_file 2>/dev/null || echo '{}'" 2>/dev/null || echo '{}')
+    local status
+    status=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status',''))" 2>/dev/null || echo "")
+    local msg
+    msg=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('msg',''))" 2>/dev/null || echo "")
+    local version
+    version=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('version',''))" 2>/dev/null || echo "")
+
+    if [ "$status" = "ok" ]; then
+      ok "$label: $msg${version:+ (v$version)}"
+      return 0
+    elif [ "$status" = "error" ]; then
+      warn "$label: FAILED — $msg"
+      return 1
+    fi
+    sleep "$POLL_INTERVAL"
+    elapsed=$((elapsed + POLL_INTERVAL))
+    info "$label: waiting... (${elapsed}s)"
+  done
+  warn "$label: timed out after ${timeout}s"
+  return 1
+}
+
+# Same but for local status file
+wait_for_status_local() {
+  local label="$1" local_file="$2" timeout="$3"
+  local elapsed=0
+  while [ "$elapsed" -lt "$timeout" ]; do
+    if [ -f "$local_file" ]; then
+      local result; result=$(cat "$local_file" 2>/dev/null || echo '{}')
+      local status; status=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status',''))" 2>/dev/null || echo "")
+      local msg;    msg=$(echo "$result"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('msg',''))" 2>/dev/null || echo "")
+      local version; version=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('version',''))" 2>/dev/null || echo "")
+
+      if [ "$status" = "ok" ]; then
+        ok "$label: $msg${version:+ (v$version)}"
+        return 0
+      elif [ "$status" = "error" ]; then
+        warn "$label: FAILED — $msg"
+        return 1
+      fi
+    fi
+    sleep "$POLL_INTERVAL"
+    elapsed=$((elapsed + POLL_INTERVAL))
+    info "$label: waiting... (${elapsed}s)"
+  done
+  warn "$label: timed out after ${timeout}s"
+  return 1
+}
+
+# ── Main ──────────────────────────────────────────────────────────────
+
+echo ""
+echo -e "${BOLD}${CYAN}╔══════════════════════════════════════════╗${RESET}"
+echo -e "${BOLD}${CYAN}║          PCOS Deploy Orchestrator        ║${RESET}"
+echo -e "${BOLD}${CYAN}╚══════════════════════════════════════════╝${RESET}"
+
+# ── Phase 0: Version bump ─────────────────────────────────────────────
+hdr "Phase 0: Prep"
+
+VERSION_FILE="$PROJECT/src/core/version.py"
+CURRENT_VERSION=$(grep '__version__' "$VERSION_FILE" | grep -o '"[^"]*"' | tr -d '"')
+
 if $BUMP_VERSION; then
-  VERSION_FILE="$PROJECT/src/core/version.py"
-  CURRENT=$(grep '__version__' "$VERSION_FILE" | grep -o '"[^"]*"' | tr -d '"')
-  IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+  IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
   PATCH=$((PATCH + 1))
   NEW_VERSION="$MAJOR.$MINOR.$PATCH"
-  sed -i "s/__version__ = \"$CURRENT\"/__version__ = \"$NEW_VERSION\"/" "$VERSION_FILE"
-  echo "  Version bumped: $CURRENT → $NEW_VERSION"
-fi
-
-# ── 2. Kill local instance ────────────────────────────────────────────
-echo "  Stopping local instance..."
-pkill -f 'python3.*main.py' 2>/dev/null || true
-sleep 1
-
-# ── 3. Clear local log ───────────────────────────────────────────────
-if $CLEAR_LOGS; then
-  > "$HOME/.local/share/pcos/logs/app.log" 2>/dev/null || true
-  echo "  Local log cleared"
-fi
-
-# ── 4. Commit and push ────────────────────────────────────────────────
-cd "$PROJECT"
-if git diff --quiet && git diff --staged --quiet; then
-  echo "  Nothing to commit — pushing existing HEAD"
+  sed -i "s/__version__ = \"$CURRENT_VERSION\"/__version__ = \"$NEW_VERSION\"/" "$VERSION_FILE"
+  CURRENT_VERSION="$NEW_VERSION"
+  ok "Version bumped to v$CURRENT_VERSION"
 else
-  git add -A
-  git commit -m "deploy: $(date '+%Y-%m-%d %H:%M')"
+  info "Deploying v$CURRENT_VERSION (use --bump-version to increment)"
 fi
-git push origin master
-echo "  Pushed to origin/master"
 
-# ── 5. Kill, pull, clear log on laptop ───────────────────────────────
-echo "  Updating laptop..."
-ssh "$LAPTOP_USER@$LAPTOP_HOST" "
-  pkill -f 'python3.*main.py' 2>/dev/null || true
-  sleep 1
-  cd $LAPTOP_DIR
-  git fetch --all
-  git reset --hard origin/master
-  echo '  Laptop: pulled $(git log --oneline -1)'
-  $(if $CLEAR_LOGS; then echo '> '$LOG_PATH; echo echo "  Laptop: log cleared"; fi)
-"
+TARGET_VERSION="$CURRENT_VERSION"
 
-# ── 6. Start laptop ──────────────────────────────────────────────────
-ssh "$LAPTOP_USER@$LAPTOP_HOST" "
-  cd $LAPTOP_DIR
-  nohup python3 src/main.py --start > /dev/null 2>&1 &
-  sleep 3
-  pgrep -af 'main.py' | grep -v grep | head -1
-" && echo "  Laptop: started"
+# Clear old deploy status files
+mkdir -p "$DEPLOY_DIR_LOCAL"
+rm -f "$DEPLOY_DIR_LOCAL"/{kill,pull,restart}_status.json
 
-# ── 7. Start local ───────────────────────────────────────────────────
-cd "$PROJECT"
-nohup python3 src/main.py --start > /dev/null 2>&1 &
-sleep 2
-echo "  Local: started (PID $(pgrep -f 'python3.*main.py' | head -1))"
+# Upload helper scripts to laptop
+upload_scripts
 
+# ── Phase 1+2: Push to GitHub AND kill both machines simultaneously ───
+hdr "Phase 1+2: Push + Kill (parallel)"
+
+# Push to GitHub in background
+(
+  cd "$PROJECT"
+  if git diff --quiet && git diff --staged --quiet; then
+    info "Git: nothing new to commit, pushing existing HEAD..."
+  else
+    git add -A
+    COMMIT_MSG="deploy v$TARGET_VERSION: $(date '+%Y-%m-%d %H:%M')"
+    git commit -m "$COMMIT_MSG"
+    info "Git: committed — $COMMIT_MSG"
+  fi
+  git push origin master
+  echo "pushed" > "$DEPLOY_DIR_LOCAL/push_done"
+  ok "Git: pushed to origin/master"
+) &
+PUSH_PID=$!
+
+# Kill laptop in background
+(
+  info "Laptop: triggering kill..."
+  rm -f /tmp/pcos_laptop_kill_status.json
+  ssh "$LAPTOP_USER@$LAPTOP_HOST" \
+    "bash $LAPTOP_DIR/scripts/device_kill.sh" 2>&1 | \
+    while IFS= read -r line; do info "  [laptop] $line"; done
+  # Copy status file locally for polling
+  scp -q "$LAPTOP_USER@$LAPTOP_HOST:$DEPLOY_DIR_LAPTOP/kill_status.json" \
+    /tmp/pcos_laptop_kill_status.json 2>/dev/null || true
+) &
+LAPTOP_KILL_PID=$!
+
+# Kill local in background
+(
+  info "Desktop: triggering kill..."
+  bash "$SCRIPT_DIR/device_kill.sh" 2>&1 | \
+    while IFS= read -r line; do info "  [desktop] $line"; done
+) &
+DESKTOP_KILL_PID=$!
+
+# Wait for all three background jobs
+info "Waiting for push + kills to complete..."
+wait $PUSH_PID    || fail "Git push failed"
+wait $LAPTOP_KILL_PID || warn "Laptop kill process had issues (checking status...)"
+wait $DESKTOP_KILL_PID || warn "Desktop kill process had issues (checking status...)"
+
+# Verify kills via status files
+KILL_OK=true
+wait_for_status_local "Desktop kill" "$DEPLOY_DIR_LOCAL/kill_status.json" 30 || KILL_OK=false
+# Laptop kill status was scp'd to /tmp
+if [ -f /tmp/pcos_laptop_kill_status.json ]; then
+  cp /tmp/pcos_laptop_kill_status.json "$DEPLOY_DIR_LOCAL/laptop_kill_status.json"
+  wait_for_status_local "Laptop kill" "$DEPLOY_DIR_LOCAL/laptop_kill_status.json" 5 || KILL_OK=false
+else
+  # Try fetching directly
+  wait_for_status "$LAPTOP_HOST" "$LAPTOP_USER@$LAPTOP_HOST" \
+    "$DEPLOY_DIR_LAPTOP/kill_status.json" 30 || KILL_OK=false
+fi
+
+if ! $KILL_OK; then
+  warn "One or more kills did not confirm — continuing anyway (processes may already be dead)"
+fi
+
+# Verify push
+if [ ! -f "$DEPLOY_DIR_LOCAL/push_done" ]; then
+  fail "Git push did not confirm completion"
+fi
+ok "Push confirmed"
+
+# ── Phase 3: Pull both machines simultaneously ─────────────────────────
+hdr "Phase 3: Pull (parallel)"
+
+rm -f "$DEPLOY_DIR_LOCAL"/{pull,laptop_pull}_status.json
+
+# Pull laptop in background
+(
+  info "Laptop: triggering pull..."
+  ssh "$LAPTOP_USER@$LAPTOP_HOST" \
+    "bash $LAPTOP_DIR/scripts/device_pull.sh $LAPTOP_DIR $TARGET_VERSION" 2>&1 | \
+    while IFS= read -r line; do info "  [laptop] $line"; done
+  scp -q "$LAPTOP_USER@$LAPTOP_HOST:$DEPLOY_DIR_LAPTOP/pull_status.json" \
+    "$DEPLOY_DIR_LOCAL/laptop_pull_status.json" 2>/dev/null || true
+) &
+LAPTOP_PULL_PID=$!
+
+# Pull local in background
+(
+  info "Desktop: triggering pull..."
+  bash "$SCRIPT_DIR/device_pull.sh" "$LOCAL_DIR" "$TARGET_VERSION" 2>&1 | \
+    while IFS= read -r line; do info "  [desktop] $line"; done
+) &
+DESKTOP_PULL_PID=$!
+
+wait $LAPTOP_PULL_PID || warn "Laptop pull process exited non-zero"
+wait $DESKTOP_PULL_PID || warn "Desktop pull process exited non-zero"
+
+# Verify pulls
+PULL_OK=true
+wait_for_status_local "Desktop pull" "$DEPLOY_DIR_LOCAL/pull_status.json" 30 || PULL_OK=false
+wait_for_status_local "Laptop pull"  "$DEPLOY_DIR_LOCAL/laptop_pull_status.json" 30 || PULL_OK=false
+
+if ! $PULL_OK; then
+  fail "Pull phase failed — not proceeding to restart"
+fi
+
+# ── Phase 4: Restart both machines simultaneously ─────────────────────
+hdr "Phase 4: Restart (parallel)"
+
+rm -f "$DEPLOY_DIR_LOCAL"/{restart,laptop_restart}_status.json
+
+# Restart laptop in background
+(
+  info "Laptop: triggering restart..."
+  ssh "$LAPTOP_USER@$LAPTOP_HOST" \
+    "bash $LAPTOP_DIR/scripts/device_restart.sh $LAPTOP_DIR $TARGET_VERSION" 2>&1 | \
+    while IFS= read -r line; do info "  [laptop] $line"; done
+  scp -q "$LAPTOP_USER@$LAPTOP_HOST:$DEPLOY_DIR_LAPTOP/restart_status.json" \
+    "$DEPLOY_DIR_LOCAL/laptop_restart_status.json" 2>/dev/null || true
+) &
+LAPTOP_RESTART_PID=$!
+
+# Restart local in background
+(
+  info "Desktop: triggering restart..."
+  bash "$SCRIPT_DIR/device_restart.sh" "$LOCAL_DIR" "$TARGET_VERSION" 2>&1 | \
+    while IFS= read -r line; do info "  [desktop] $line"; done
+) &
+DESKTOP_RESTART_PID=$!
+
+wait $LAPTOP_RESTART_PID || warn "Laptop restart process exited non-zero"
+wait $DESKTOP_RESTART_PID || warn "Desktop restart process exited non-zero"
+
+# Verify restarts
+RESTART_OK=true
+wait_for_status_local "Desktop restart" "$DEPLOY_DIR_LOCAL/restart_status.json" 60 || RESTART_OK=false
+wait_for_status_local "Laptop restart"  "$DEPLOY_DIR_LOCAL/laptop_restart_status.json" 60 || RESTART_OK=false
+
+# ── Summary ───────────────────────────────────────────────────────────
+hdr "Deploy Summary"
+
+if $RESTART_OK; then
+  echo ""
+  echo -e "${GREEN}${BOLD}  ✓ Deploy v$TARGET_VERSION complete — both machines healthy${RESET}"
+  echo ""
+else
+  echo ""
+  echo -e "${YELLOW}${BOLD}  ⚠ Deploy v$TARGET_VERSION completed with warnings — check logs${RESET}"
+  echo ""
+fi
+
+if $NO_TAIL; then
+  exit 0
+fi
+
+# ── Phase 5: Live log tail ─────────────────────────────────────────────
+hdr "Live Logs (Ctrl+C to stop)"
 echo ""
-echo "  Deploy complete. Tailing logs..."
-echo "  (Ctrl+C to stop watching)"
-echo "═══════════════════════════════════════════"
+echo -e "${CYAN}  [desktop]${RESET} $LOG_LOCAL"
+echo -e "${CYAN}  [laptop] ${RESET} $LAPTOP_USER@$LAPTOP_HOST:$LOG_LAPTOP"
 echo ""
 
-# ── 8. Tail both logs ────────────────────────────────────────────────
-tail -f "$HOME/.local/share/pcos/logs/app.log" &
-TAIL_PID=$!
-ssh "$LAPTOP_USER@$LAPTOP_HOST" "tail -f $LOG_PATH" &
-SSH_TAIL_PID=$!
+# Prefix each line with the source
+(tail -f "$LOG_LOCAL" 2>/dev/null | while IFS= read -r line; do
+  echo -e "${CYAN}[desktop]${RESET} $line"
+done) &
+TAIL_LOCAL=$!
 
-trap "kill $TAIL_PID $SSH_TAIL_PID 2>/dev/null; exit 0" INT TERM
+(ssh "$LAPTOP_USER@$LAPTOP_HOST" "tail -f $LOG_LAPTOP" 2>/dev/null | while IFS= read -r line; do
+  echo -e "${YELLOW}[laptop] ${RESET} $line"
+done) &
+TAIL_SSH=$!
+
+trap "kill $TAIL_LOCAL $TAIL_SSH 2>/dev/null; echo ''; ok 'Log tail stopped'; exit 0" INT TERM
 wait

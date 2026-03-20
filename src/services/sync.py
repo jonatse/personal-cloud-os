@@ -317,12 +317,12 @@ class SyncEngine:
         for path, remote_fi in remote.items():
             local_fi = self._local_files.get(path)
             if local_fi is None:
-                needed.append(path)
+                needed.append((path, remote_fi))
             elif remote_fi.hash and local_fi.hash and remote_fi.hash != local_fi.hash:
                 if remote_fi.mtime > local_fi.mtime:
-                    needed.append(path)
+                    needed.append((path, remote_fi))
             elif remote_fi.mtime > (local_fi.mtime if local_fi else 0):
-                needed.append(path)
+                needed.append((path, remote_fi))
 
         logger.info(f"Need {len(needed)} file(s) from {peer_id[:12]}")
 
@@ -333,12 +333,38 @@ class SyncEngine:
             t = self.transport_manager.get_transport_for_peer(peer_id)
             transport_tier = t.value
 
-        for path in needed:
+        for path, remote_fi in needed:
+            # Ask the remote to send this file
             self.peer_link_service.send_json_to_peer(peer_id, {
                 "type":      MSG_REQUEST_FILE,
                 "path":      path,
                 "transport": transport_tier,
             })
+
+            # For swarm transport, register want() so we're ready when HAVE arrives
+            if transport_tier == "swarm" and self.transport_manager:
+                try:
+                    from transport.swarm import _total_chunks
+                    dest_path = os.path.join(self._sync_dir, path)
+                    total_chunks = _total_chunks(remote_fi.size)
+                    file_hash = remote_fi.hash or ""
+
+                    def _on_swarm_complete(dest_path=dest_path, rel_path=path):
+                        logger.info(f"Swarm: assembled {rel_path}")
+                        if self._event_loop:
+                            asyncio.run_coroutine_threadsafe(
+                                self._scan_local_files(), self._event_loop)
+
+                    self.transport_manager.swarm.want(
+                        file_hash=file_hash,
+                        dest_path=dest_path,
+                        total_chunks=total_chunks,
+                        on_complete=_on_swarm_complete,
+                    )
+                    logger.debug(f"Swarm: registered want for {path} ({total_chunks} chunks)")
+                except Exception as exc:
+                    logger.warning(f"Could not register swarm.want for {path}: {exc}")
+
             await asyncio.sleep(0.05)
 
     async def _send_file(self, peer_id: str, filepath: str):
