@@ -363,19 +363,38 @@ class ReticulumPeerService:
                 with self._lock:
                     self._links[peer_id] = link
 
-                # Hand to PeerLinkService
+                # Hand to PeerLinkService — always register packet callback
+                # on the inbound link even if we also have an outbound link,
+                # because packets from the remote arrive on THIS link object.
                 pls = self._peer_link_service
                 if pls is not None:
                     with pls._lock:
                         if peer_id not in pls._links:
+                            # No outbound link yet — store inbound as primary
                             from services.peer_link import LinkInfo, LinkState
                             pls._links[peer_id]     = link
                             pls._link_info[peer_id] = LinkInfo(
                                 peer_id=peer_id, peer_name=peer_name)
                             pls._link_info[peer_id].state = LinkState.CONNECTING
-                    # Call _on_link_established outside the lock
-                    if pls._links.get(peer_id) is link:
-                        pls._on_link_established(link)
+                            # Full _on_link_established handles the rest
+                            pls._on_link_established(link)
+                        else:
+                            # Outbound link exists — register packet callback
+                            # directly on the inbound link so we receive data
+                            # sent by the remote over their outbound path.
+                            import struct as _struct
+                            link.set_packet_callback(
+                                lambda msg, pkt, pid=peer_id:
+                                    pls._on_packet_received(pid, msg, pkt)
+                            )
+                            # Also ensure data callback is registered
+                            pls.register_data_callback(
+                                peer_id, pls._data_callbacks.get(peer_id)
+                                or (lambda pid, d: None)
+                            )
+                            logger.debug(
+                                f"Inbound link packet callback registered for "
+                                f"existing peer {peer_id[:12]}")
 
             except Exception as exc:
                 logger.error(f"Error in inbound link identification: {exc}",
