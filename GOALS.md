@@ -142,14 +142,75 @@ Goal: Files in `~/Sync` on one device appear on other devices.
 
 ---
 
-## Priority 4 — User Identity & Multi-Device Auth
+## Priority 1.6 — User Identity & Device Onboarding (MERGED WITH PRIORITY 1)
 
-Goal: A user has one identity that spans all their devices.
+**Background**: RNS natively supports identity sharing - copy the identity file to a new device and it's automatically trusted. This means Priority 4 melts into Priority 1.
 
-- [ ] **P4.1** Design user identity model (separate from device identity)
-- [ ] **P4.2** Key exchange / trust establishment between devices
-- [ ] **P4.3** Authorisation: which devices can sync to which
-- [ ] **P4.4** Revocation
+Goal: User identity that spans all their devices, with easy onboarding via QR codes.
+
+### Identity Model
+- One identity per user (not per device)
+- All devices share the same identity = automatic trust
+- No manual pairing needed - identity IS the verification
+- Works over LAN, I2P, or any RNS interface
+
+### Implementation
+
+- [x] **P1.6.1** Identity per device (DONE - already how RNS works)
+- [ ] **P1.6.2** Identity CLI commands:
+  - `identity create` - generate new user identity
+  - `identity show` - display identity hash
+  - `identity show-qr` - display as QR code
+  - `identity export` - print identity string
+  - `identity import` - import from string/QR
+  - `identity scan-qr` - scan QR from camera
+
+- [ ] **P1.6.3** QR code support:
+  - Generate QR code from identity (use `qrcode` library)
+  - Scan QR code to import identity (use `pyzbar` + `opencv`)
+
+- [ ] **P1.6.4** I2P integration helper:
+  - `network enable-i2p` - enable I2P interface
+  - Show persistent .b32.i2p address
+  - Works over internet without port forwarding
+
+- [ ] **P1.6.5** Identity backup/restore:
+  - Export identity as encrypted string
+  - Import on new device
+  - Works offline (air-gapped)
+
+### How It Works
+
+```bash
+# First device - create identity
+pcos identity create
+
+# Show QR for other devices to scan
+pcos identity show-qr
+
+# On new device - scan QR from camera  
+pcos identity scan-qr
+
+# OR copy identity file manually
+pcos identity export  # prints base64 identity
+# paste on new device:
+pcos identity import  # paste string
+
+# Now both devices share YOUR identity = automatically trusted
+```
+
+### For Friends / Circles
+
+Same flow, but for a "circle" identity:
+```bash
+# Create circle identity (shared with friends)
+pcos identity create --circle "family"
+
+# Share via QR or export
+pcos circle show-qr family
+# Friend scans and imports
+# Now friend is in your circle (PCOS-level access control)
+```
 
 ---
 
