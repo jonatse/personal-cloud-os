@@ -7,11 +7,11 @@ It is the sprint board. SPEC.md is the design document.
 
 ---
 
-## Current State (as of 2026-03-19)
+## Current State (as of 2026-03-20)
 
-The system boots, joins the LAN via Reticulum, discovers peers, and shows
-everything in a live curses CLI. Two devices (debian desktop + pop-osmark laptop)
-are discovering each other successfully.
+The system boots, joins the LAN via Reticulum, discovers peers, syncs files,
+and shows everything in a live curses CLI. Two devices (debian desktop + pop-osmark
+laptop) are discovering each other and syncing files successfully!
 
 ---
 
@@ -55,10 +55,59 @@ Goal: Two devices can find each other and exchange encrypted messages.
 - [x] **P1.2** LAN peer discovery working (both directions confirmed)
 - [x] **P1.3a** Peer announces and is stored in `_peers` dict
 - [x] **P1.3b** CLI shows live peer count and names
-- [ ] **P1.4** Fix `create_link()` — store `RNS.Destination` not `RNS.Identity` in `ReticulumPeer.destination` (Bug B2)
-- [ ] **P1.5** Fix `stop()` guard in ReticulumPeerService (Bug B1)
+- [x] **P1.4** Fix `create_link()` — store `RNS.Destination` not `RNS.Identity` in `ReticulumPeer.destination` (Bug B2)
+- [x] **P1.5** Fix `stop()` guard in ReticulumPeerService (Bug B1)
 - [ ] **P1.6** Verify encrypted link establishment end-to-end (send a test message peer→peer)
 - [ ] **P1.7** Add phone/Sideband discovery via Tailscale TCP interface
+
+---
+
+## Priority 1.5 — Device Pairing & Trust
+
+Goal: Bidirectional trust establishment between devices on the same network.
+
+### Flow
+1. Device A announces with `type: "pairing_request"` + identity_hash
+2. Device B receives, shows prompt with name + hash, user manually accepts
+3. Device B announces `type: "pairing_accepted"`
+4. Device A receives, shows prompt, user manually accepts
+5. NOW BIDIRECTIONAL TRUST ESTABLISHED
+
+### Implementation
+
+- [ ] **P1.5.1** Extend app_data in announces to include:
+  - `identity_hash` (full RNS identity hash for verification)
+  - `device_id` (SHA256 of hostname+MAC)
+  - `type`: "normal" | "pairing_request" | "pairing_accepted" | "pairing_rejected"
+
+- [ ] **P1.5.2** Detect pairing types in `_on_announce`:
+  - Fire events: `pairing.request`, `pairing.accepted`, `pairing.rejected`
+
+- [ ] **P1.5.3** Update device_manager.py:
+  - Add fields: `trusted`, `pending`, `paired_by`, `paired_at`, `expires_at`
+  - `add_device()` - add as pending with 24h expiry
+  - `trust_device(name)` - mark trusted, record who paired
+  - `reject_device(name)` - remove pending
+  - `revoke_device(name)` - remove trusted
+  - `is_trusted(name)` / `is_pending(name)` - checks
+
+- [ ] **P1.5.4** CLI commands:
+  - `pair` - show pending + trusted devices
+  - `pair accept <name>` - approve pending device
+  - `pair reject <name>` - reject/remove pending
+  - `pair revoke <name>` - revoke trusted device
+  - `pair trust` - list trusted
+  - `pair pending` - list pending
+
+- [ ] **P1.5.5** Auto-prompt when pairing request received:
+  - Print to CLI output: "Device 'laptop' (hash: 78e5...) wants to join mesh. Accept? (y/n)"
+  - Or use `pair accept` later
+
+- [ ] **P1.5.6** Polish:
+  - Handle rejection notifications
+  - Cleanup expired pendings (24h)
+  - Show trust status in `peers` and `device` commands
+  - Edge case: simultaneous requests → auto-accept both
 
 ---
 
@@ -81,9 +130,9 @@ Goal: The CLI is reliable, handles all edge cases, commands do what they say.
 
 Goal: Files in `~/Sync` on one device appear on other devices.
 
-- [x] **P3.1** `SyncEngine` scans local `~/Sync` directory on startup
-- [x] **P3.2** File manifest structure defined (`FileInfo` dataclass)
-- [x] **P3.3** JSON wire protocol defined (6 message types)
+- [x] **P3.1** `SyncEngine` scans local `~/Sync` directory on startup ✅ WORKING
+- [x] **P3.2** File manifest structure defined (`FileInfo` dataclass) ✅ WORKING
+- [x] **P3.3** JSON wire protocol defined (6 message types) ✅ WORKING
 - [ ] **P3.4** Fix P2P link establishment first (P1.4–P1.6 must be done)
 - [ ] **P3.5** Fix file chunk reassembly (Bug B11)
 - [ ] **P3.6** Implement conflict resolution (newest/oldest/manual — currently always overwrites)
