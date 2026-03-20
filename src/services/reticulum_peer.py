@@ -222,6 +222,7 @@ class ReticulumPeerService:
     def _on_announce(self, dest_hash, identity, app_data):
         """Called by RNS when another PCOS device announces."""
         peer_hash = dest_hash.hex() if hasattr(dest_hash, "hex") else str(dest_hash)
+        logger.debug(f"v1 _on_announce: peer_hash={peer_hash}, identity_is_none={identity is None}, app_name={APP_NAME}, peer_aspect={PEER_ASPECT}")
 
         # Filter: verify this announce is for our app aspect
         expected_dest = RNS.Destination(
