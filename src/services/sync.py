@@ -272,28 +272,35 @@ class SyncEngine:
     async def _sync_with_peer(self, peer):
         """Sync files with a specific peer."""
         logger.info(f"Syncing with peer: {peer.name}")
-        
-        # Ensure we're connected
+
+        # Ensure we're connected and the link is ACTIVE before sending
         if not self.peer_link_service.is_connected_to(peer.id):
             logger.debug(f"Not connected to {peer.name}, connecting...")
             connected = self.peer_link_service.connect_to_peer(peer.id)
             if not connected:
                 logger.warning(f"Could not connect to peer: {peer.name}")
                 return
-            # Wait for connection
-            await asyncio.sleep(1)
-        
+
+            # Wait up to 10 seconds for the link to become ACTIVE
+            for _ in range(20):
+                await asyncio.sleep(0.5)
+                if self.peer_link_service.is_connected_to(peer.id):
+                    break
+            else:
+                logger.warning(f"Link to {peer.name} did not become ACTIVE in time")
+                return
+
         # Request peer's file list
         try:
-            # Send file list request
             request = {
                 "type": SYNC_MSG_REQUEST_FILELIST,
                 "timestamp": datetime.now().isoformat()
             }
-            self.peer_link_service.send_json_to_peer(peer.id, request)
-            
-            # Wait for response (handled in _handle_peer_data)
-            
+            sent = self.peer_link_service.send_json_to_peer(peer.id, request)
+            if sent:
+                logger.info(f"Sent file list request to {peer.name}")
+            else:
+                logger.warning(f"Failed to send file list request to {peer.name}")
         except Exception as e:
             logger.error(f"Error syncing with peer {peer.name}: {e}")
     
