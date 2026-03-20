@@ -1,29 +1,47 @@
-# Personal Cloud OS - Dependencies
+# Personal Cloud OS — Python Dependencies
+#
+# IMPORTANT: These packages are being migrated to src/vendor/ for
+# self-contained offline distribution. See GOALS.md S1-S12 and
+# SPEC.md "Self-Containment Architecture" for the full plan.
+#
+# Until vendoring is complete, install with:
+#   pip install -r requirements.txt
+#
+# After vendoring is complete (S10), this file becomes a reference
+# only — no installation needed.
 
-# Core
-python >= 3.10
+# ── Core networking ──────────────────────────────────────────────
+# Reticulum ZeroTrust networking stack (pure Python)
+# https://github.com/markqvist/Reticulum
+# Vendoring: S3/S4 — copy to src/vendor/RNS/
+rns >= 1.1.4
 
-# Networking
-zeroconf >= 0.39.0
+# Serial port support (pure Python, Reticulum dependency)
+# Vendoring: S3/S4 — copy to src/vendor/serial/
+pyserial >= 3.5
 
-# Reticulum - ZeroTrust networking stack
-rns >= 0.5.0
+# ── Cryptography ─────────────────────────────────────────────────
+# Required by rns. Has compiled Rust extension (_rust.abi3.so).
+# Needs libssl.so.3 on the system (present on all modern Linux).
+# Vendoring: S3/S4 — copy to src/vendor/cryptography/ including .so
+cryptography >= 43.0.0
 
-# Async
-aiohttp >= 3.9.0
-
-# Configuration
-PyYAML >= 6.0
-
-# Logging
-colorlog >= 6.8.0
-
-# System Tray (optional)
-pystray >= 0.19.5
-Pillow >= 10.0.0
-
-# CLI
-prompt-toolkit >= 3.0.0
-
-# System info
+# ── System info ──────────────────────────────────────────────────
+# Hardware/network detection. Has compiled C extension (.abi3.so).
+# Needs only libc (universal).
+# Vendoring: S3/S4 — copy to src/vendor/psutil/ including .so
 psutil >= 5.9.0
+
+# ── Optional: System tray ────────────────────────────────────────
+# Only used with --tray flag. Not required for core functionality.
+# Pillow: replace with pure-Python icon to eliminate 12 system lib deps (S2)
+# pystray: vendor after Pillow is resolved
+# pystray >= 0.19.5
+# Pillow >= 10.0.0
+
+# ── REMOVED (were listed but never imported anywhere in the code) ─
+# zeroconf    — never used, removed in S1
+# aiohttp     — never used, removed in S1
+# colorlog    — never used, removed in S1
+# prompt-toolkit — never used, removed in S1
+# PyYAML      — never used (config is JSON), removed in S1

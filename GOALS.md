@@ -133,3 +133,132 @@ Goal: A user has one identity that spans all their devices.
 | 2026-03-19 | Removed `PeerDiscoveryService` layer | Two-layer architecture caused race conditions; single Reticulum layer is simpler |
 | 2026-03-19 | Curses split-screen CLI | Print-based refresh caused scroll spam and no persistent prompt |
 
+
+---
+
+## Priority 0.5 — Self-Contained Package (The Foundation)
+
+**Goal**: `git clone` → `python3 main.py --cli` — works on any modern Linux
+with zero internet, zero package manager, zero install steps.
+
+**Why this comes before everything else**: Every feature we build on top
+is worthless if the app can't be distributed and run offline. This is the
+foundation of the decentralization vision.
+
+**Context**: See SPEC.md "Self-Containment Architecture" section for full
+technical rationale and dependency audit.
+
+### Step-by-Step Todo List
+
+- [ ] **S1** Clean `requirements.txt`
+      Remove 5 packages that are imported nowhere in the codebase:
+      `zeroconf`, `aiohttp`, `colorlog`, `prompt-toolkit`, `PyYAML`
+      Keep: `rns`, `cryptography`, `pyserial`, `psutil`, `Pillow` (optional), `pystray` (optional)
+
+- [ ] **S2** Drop Pillow as a hard dependency
+      Pillow is only used to draw a 16x16 tray icon in `tray/system_tray.py`.
+      Replace with a pure-Python XBM/base64 icon or just skip the icon.
+      This removes 3.4MB of package + 12 system library dependencies.
+
+- [ ] **S3** Create `src/vendor/` directory structure
+      ```
+      src/vendor/
+      ├── README.md        ← documents what is here and why
+      ├── RNS/             ← Reticulum (pure Python, copy as-is)
+      ├── serial/          ← pyserial (pure Python, copy as-is)
+      ├── cryptography/    ← includes _rust.abi3.so (needs libssl on system)
+      └── psutil/          ← includes _psutil_linux.abi3.so (needs only libc)
+      ```
+
+- [ ] **S4** Copy packages into `src/vendor/`
+      - RNS from `/home/jonathan/.local/lib/python3.13/site-packages/RNS`
+      - serial from `/home/jonathan/.local/lib/python3.13/site-packages/serial`
+      - cryptography from `/usr/lib/python3/dist-packages/cryptography`
+      - psutil from `/usr/lib/python3/dist-packages/psutil`
+
+- [ ] **S5** Update `src/main.py` to use vendor/ first
+      Add at the very top of main.py (before any other imports):
+      ```python
+      import sys, os
+      sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'vendor'))
+      ```
+      This means vendored packages are used instead of system packages.
+      Falls back to system if vendor copy is missing (graceful degradation).
+
+- [ ] **S6** Install build dependencies on desktop (one time only)
+      ```bash
+      sudo apt install cmake libboost-dev libboost-program-options-dev \
+                       libboost-filesystem-dev libboost-chrono-dev \
+                       libboost-thread-dev libboost-iostreams-dev
+      ```
+      These are only needed on the build machine (desktop). Nobody else
+      needs them. After step S7 they can be removed.
+
+- [ ] **S7** Build static i2pd binary
+      ```bash
+      cd /home/jonathan/project
+      git submodule add https://github.com/PurpleI2P/i2pd src/vendor/i2pd-src
+      cd src/vendor/i2pd-src
+      make USE_STATIC=yes USE_AESNI=yes
+      cp i2pd ../../bin/i2pd
+      ```
+      Commit `src/bin/i2pd` to the repo. This is a ~15MB binary that
+      works on any x86_64 Linux with no system dependencies.
+      NOTE: Also need ARM builds for Raspberry Pi (aarch64).
+      ARM build can be done on a Pi or via cross-compilation.
+
+- [ ] **S8** Update `src/services/i2p_manager.py` to use bundled binary
+      Change `_find_i2pd()` to check `src/bin/i2pd` FIRST before PATH.
+      ```python
+      # Check bundled binary first
+      bundled = os.path.join(os.path.dirname(__file__), '..', 'bin', 'i2pd')
+      bundled = os.path.abspath(bundled)
+      if os.path.isfile(bundled) and os.access(bundled, os.X_OK):
+          return bundled
+      ```
+
+- [ ] **S9** Write `src/verify.py` — startup self-check
+      Run on every startup, checks:
+      - Python >= 3.10
+      - vendor/ packages present and importable
+      - src/bin/i2pd present and executable
+      - libssl available on system (required for cryptography)
+      - Prints a clear report: what's OK, what's missing, what to do
+
+- [ ] **S10** Test on laptop with zero pre-installed packages
+      ```bash
+      # On laptop - verify it works with ONLY what's in the repo
+      cd ~/Projects/personal-cloud-os
+      git pull
+      python3 src/main.py --cli
+      # Should start with zero errors, zero installs needed
+      ```
+
+- [ ] **S11** PyInstaller build (makes a distributable folder)
+      ```bash
+      pip install pyinstaller  # only on build machine
+      cd /home/jonathan/project
+      pyinstaller --onedir --name pcos src/main.py
+      # dist/pcos/ is a complete self-contained app folder
+      # zip it, send it to anyone, it just works
+      ```
+
+- [ ] **S12** Document the build process in `BUILD.md`
+      One file that explains how to rebuild everything from source.
+      Someone with no context should be able to read it and produce
+      a working distributable.
+
+---
+
+## Architecture Decisions Log (continued)
+
+| Date | Decision | Reason |
+|------|----------|--------|
+| 2026-03-18 | Switched from UDP broadcast discovery to Reticulum | ZeroTrust, works over any interface, identity-based |
+| 2026-03-19 | Removed `PeerDiscoveryService` layer | Two-layer architecture caused race conditions; single Reticulum layer is simpler |
+| 2026-03-19 | Curses split-screen CLI | Print-based refresh caused scroll spam and no persistent prompt |
+| 2026-03-19 | Chose I2P (i2pd) for internet tunneling | Decentralized, no central server, open source, already integrated in Reticulum |
+| 2026-03-19 | Chose vendor bundling over system packages | Self-contained, offline-first, no package manager needed on target machine |
+| 2026-03-19 | Chose PyInstaller for distribution | Bundles Python + all deps into one folder, works on Linux/Windows/Mac |
+| 2026-03-19 | Deferred Android until Linux is self-contained | BeeWare Briefcase for Android once core is stable; TCP interface replaces AutoInterface on mobile |
+| 2026-03-19 | Desktop acts as Reticulum transport node | Always-on node routes for mobile/lightweight clients that can't do UDP multicast |

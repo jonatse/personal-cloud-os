@@ -433,3 +433,121 @@ This keeps services decoupled and testable in isolation.
 - Audio/video passthrough
 - Remote app execution
 
+
+---
+
+## Self-Containment Architecture
+
+*Added 2026-03-19*
+
+### Vision
+
+`git clone` + `python3 main.py --cli` = fully running node.
+No internet. No package manager. No install steps. On any modern Linux.
+
+### Dependency Audit
+
+#### Pure Python (trivially vendorable)
+| Package | Size | Used for | System deps |
+|---------|------|----------|-------------|
+| RNS (Reticulum) | 4.3MB | Core networking | None |
+| pyserial | <1MB | Serial interfaces (RNS dep) | None |
+
+#### Python with compiled extensions
+| Package | Size | .so files | System deps needed |
+|---------|------|-----------|-------------------|
+| cryptography | 4.8MB | `_rust.abi3.so` | `libssl.so.3`, `libz`, `libzstd` |
+| psutil | 904KB | `_psutil_linux.abi3.so` | `libc` only (universal) |
+| Pillow | 3.4MB | 6 `.so` files | `libjpeg`, `libtiff`, `libwebp` + 12 more |
+
+#### Notes on compiled extensions
+- `cryptography` and `psutil` use `.abi3.so` (stable ABI) — work across Python 3.2+
+- Pillow's `.so` files are **version-specific** (`cpython-313-x86_64`) — tied to Python 3.13
+- Pillow is **optional** (system tray icon only) — can be replaced with pure-Python fallback
+- `libssl`, `libz`, `libstdc++` are present on every modern Linux — safe assumption
+
+#### External binary
+| Binary | Size | System deps | Build tools needed |
+|--------|------|-------------|-------------------|
+| i2pd | ~15MB | None (static) | cmake, libboost-dev, libssl-dev |
+
+### Directory Layout (target state)
+
+```
+project/
+├── src/
+│   ├── main.py              ← inserts vendor/ into sys.path at startup
+│   ├── verify.py            ← startup self-check (Python ver, vendor, i2pd)
+│   ├── vendor/              ← all Python dependencies (no pip needed)
+│   │   ├── README.md
+│   │   ├── RNS/
+│   │   ├── serial/
+│   │   ├── cryptography/
+│   │   ├── psutil/
+│   │   └── i2pd-src/        ← i2pd C++ source (git submodule)
+│   ├── bin/
+│   │   └── i2pd             ← static binary (committed, built once)
+│   └── ... (app code)
+├── BUILD.md                 ← how to rebuild everything from source
+└── dist/                    ← PyInstaller output (gitignored)
+    └── pcos/                ← complete distributable folder
+```
+
+### System Requirements (target state)
+
+After self-containment work is complete, the only requirements are:
+
+| Requirement | Why needed | Present on |
+|-------------|-----------|------------|
+| Python 3.10+ | Run the app | Ubuntu 22.04+, Debian 11+, Pop!_OS 22.04+, any modern Linux |
+| `libssl.so.3` | cryptography extension | Any Linux with OpenSSL 3.x (2021+) |
+| `libc` | Everything | Every Linux ever |
+| `libz` | Compression | Every Linux ever |
+| `libzstd` | Compression | Ubuntu 20.04+, Debian 10+ |
+
+Nothing else. No apt, no pip, no docker, no internet.
+
+### Platform Roadmap
+
+| Platform | Status | Approach |
+|----------|--------|----------|
+| Linux x86_64 | Target (now) | Native Python + vendored deps |
+| Linux aarch64 (Pi) | Soon | Same approach, ARM .so files needed |
+| Windows | Later | PyInstaller builds .exe bundle |
+| macOS | Later | PyInstaller builds .app bundle |
+| Android | Later | BeeWare Briefcase → APK; TCP interface to desktop node |
+| iOS | Future | BeeWare Briefcase → IPA |
+
+### The Decentralization Stack
+
+```
+Application Layer    (pcos — this project)
+       ↓
+Identity Layer       (Reticulum cryptographic identity)
+       ↓
+Transport Layer      (AutoInterface=LAN, I2PInterface=internet, LoRa=radio)
+       ↓
+Physical Layer       (WiFi, Ethernet, radio, serial, anything)
+```
+
+No layer depends on any central authority. Each layer has multiple
+implementations. Any node can be replaced or removed without affecting
+others. The network heals around failures automatically.
+
+### Internet Bridge Strategy
+
+Nodes that choose to can bridge to the internet:
+- Run a web server that serves a page describing the mesh
+- Accept TCP connections from internet users as a Reticulum gateway
+- Act as Reticulum transport nodes routing for mobile/lightweight clients
+- These are **optional volunteer roles** — the mesh works without them
+- The bridge is a recruitment tool: internet users join the mesh,
+  reducing dependence on the internet one person at a time
+
+### Compute Node Strategy
+
+Always-on nodes with significant hardware (GPU, RAM) can offer compute:
+- Desktop with RTX 4080 SUPER = GPU compute node on the mesh
+- Any peer can request a GPU task, result returned over encrypted link
+- No AWS, no cloud accounts — the mesh IS the cloud
+- Node owners set their own terms for resource sharing
