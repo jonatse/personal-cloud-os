@@ -148,11 +148,29 @@ class I2PManager:
 
     def status(self) -> dict:
         """Return current I2P status for display."""
+        # Determine binary source for display
+        bundled = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), '..', 'bin', 'i2pd')
+        )
+        if self._process:
+            binary_path = getattr(self._process, 'args', [''])[0]
+        else:
+            binary_path = self._find_i2pd() or ''
+
+        if binary_path == bundled:
+            binary_source = "bundled (src/bin/i2pd)"
+        elif binary_path:
+            binary_source = f"system ({binary_path})"
+        else:
+            binary_source = "not found"
+
         return {
-            "available":   self._available,
-            "sam_host":    SAM_HOST,
-            "sam_port":    SAM_PORT,
-            "we_started":  self._we_started,
+            "available":      self._available,
+            "sam_host":       SAM_HOST,
+            "sam_port":       SAM_PORT,
+            "we_started":     self._we_started,
+            "binary_source":  binary_source,
+            "binary_path":    binary_path,
         }
 
     # ------------------------------------------------------------------ #
@@ -160,16 +178,40 @@ class I2PManager:
     # ------------------------------------------------------------------ #
 
     def _find_i2pd(self) -> str | None:
-        """Find i2pd binary in PATH or common locations."""
+        """
+        Find the i2pd binary, checking in this order:
+
+        1. src/bin/i2pd  — bundled binary committed to the repo (preferred)
+           This is the self-contained path: no system install needed.
+        2. PATH          — system-installed i2pd (fallback)
+        3. Common system locations (/usr/sbin, /usr/bin, /usr/local/bin)
+
+        Returns the path to a usable binary, or None if not found.
+        """
         import shutil
-        # Check PATH first
+
+        # 1. Bundled binary — src/bin/i2pd relative to this file
+        #    This file is at src/services/i2p_manager.py
+        #    So bin/ is one directory up: src/bin/i2pd
+        bundled = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), '..', 'bin', 'i2pd')
+        )
+        if os.path.isfile(bundled) and os.access(bundled, os.X_OK):
+            logger.info(f"I2P: using bundled binary: {bundled}")
+            return bundled
+
+        # 2. System PATH
         found = shutil.which("i2pd")
         if found:
+            logger.info(f"I2P: using system binary from PATH: {found}")
             return found
-        # Common install locations
+
+        # 3. Common system install locations
         for path in ["/usr/sbin/i2pd", "/usr/bin/i2pd", "/usr/local/bin/i2pd"]:
             if os.path.isfile(path) and os.access(path, os.X_OK):
+                logger.info(f"I2P: using system binary: {path}")
                 return path
+
         return None
 
     async def _start_i2pd(self, binary: str) -> bool:

@@ -207,7 +207,7 @@ technical rationale and dependency audit.
       NOTE: Also need ARM builds for Raspberry Pi (aarch64).
       ARM build can be done on a Pi or via cross-compilation.
 
-- [ ] **S8** Update `src/services/i2p_manager.py` to use bundled binary
+- [x] **S8** Update `src/services/i2p_manager.py` to use bundled binary
       Change `_find_i2pd()` to check `src/bin/i2pd` FIRST before PATH.
       ```python
       # Check bundled binary first

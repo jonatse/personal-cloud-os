@@ -318,9 +318,15 @@ class CommandHandler:
             print(f"    State   : {state}")
             if status["available"]:
                 print(f"    SAM     : {status['sam_host']}:{status['sam_port']}")
-                print(f"    i2pd    : {origin}")
+                print(f"    Binary  : {status.get('binary_source', origin)}")
             else:
-                print(f"    Install : sudo apt install i2pd")
+                src_bin = status.get('binary_source', '')
+                if 'bundled' in src_bin:
+                    print(f"    Binary  : {src_bin}")
+                    print(f"    Status  : not running (will start on next launch)")
+                else:
+                    print(f"    Binary  : not found")
+                    print(f"    Bundled : src/bin/i2pd (should be present in repo)")
             print("─" * W)
 
         print("")
