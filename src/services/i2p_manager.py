@@ -106,24 +106,21 @@ class I2PManager:
 
         logger.info(f"I2P: found i2pd at {i2pd_bin}")
 
-        # Step 2: Is SAM bridge already up? (i2pd already running)
+        # Step 2: Patch Reticulum config now (before RNS reads it)
+        self._patch_rns_config()
+
+        # Step 3: Is SAM bridge already up? (i2pd already running externally)
         if self._sam_reachable():
             logger.info("I2P: SAM bridge already available (i2pd already running)")
             self._available = True
-        else:
-            # Step 3: Start i2pd ourselves
-            started = await self._start_i2pd(i2pd_bin)
-            if not started:
-                logger.warning("I2P: failed to start i2pd — internet discovery disabled")
-                return
+            return
 
-        # Step 4: Patch Reticulum config
-        self._patch_rns_config()
-
-        logger.info(
-            "I2P: ready. Reticulum will use I2P for internet peer discovery.\n"
-            "  Note: First connection may take 2-5 minutes while I2P builds tunnels."
-        )
+        # Step 4: Start i2pd in background — don't block startup.
+        # The SAM bridge takes 2-5 minutes on first run while I2P builds
+        # tunnels. We fire it off and let a background thread monitor it.
+        # Reticulum will use the I2P interface automatically once it's ready.
+        logger.info("I2P: starting i2pd in background (will not block startup)...")
+        self._launch_i2pd_background(i2pd_bin)
 
     async def stop(self):
         """Stop i2pd if we started it."""
@@ -223,13 +220,12 @@ class I2PManager:
 
         return None
 
-    async def _start_i2pd(self, binary: str) -> bool:
+    def _launch_i2pd_background(self, binary: str):
         """
-        Start i2pd as a background subprocess.
-        Waits up to SAM_STARTUP_TIMEOUT seconds for SAM bridge to come up.
-        Returns True on success.
+        Start i2pd as a subprocess and monitor it in a background thread.
+        Does NOT block — returns immediately.
+        The background thread sets self._available once SAM is reachable.
         """
-        logger.info("I2P: starting i2pd daemon...")
         try:
             self._process = subprocess.Popen(
                 [binary, "--daemon=false", "--log=stdout", "--loglevel=warn"],
@@ -237,23 +233,38 @@ class I2PManager:
                 stderr=subprocess.DEVNULL,
             )
             self._we_started = True
-            logger.info(f"I2P: i2pd started (pid {self._process.pid})")
+            logger.info(f"I2P: i2pd started in background (pid {self._process.pid})")
         except Exception as e:
             logger.error(f"I2P: could not launch i2pd: {e}")
-            return False
+            return
 
-        # Wait for SAM bridge to become available
-        logger.info(f"I2P: waiting up to {SAM_STARTUP_TIMEOUT}s for SAM bridge...")
+        # Monitor in background thread — mark available when SAM comes up
+        t = threading.Thread(
+            target=self._wait_for_sam,
+            daemon=True,
+            name="i2p-monitor"
+        )
+        t.start()
+
+    def _wait_for_sam(self):
+        """
+        Background thread: polls SAM bridge until it's up or timeout.
+        Sets self._available = True when ready.
+        i2pd typically takes 2-5 minutes on first run to build tunnels.
+        """
+        logger.info(f"I2P: monitoring SAM bridge (up to {SAM_STARTUP_TIMEOUT}s)...")
         deadline = time.time() + SAM_STARTUP_TIMEOUT
-        while time.time() < deadline:
+        while time.time() < deadline and self._running:
             if self._sam_reachable():
                 self._available = True
-                logger.info("I2P: SAM bridge is up")
-                return True
-            await asyncio.sleep(2)
-
-        logger.warning("I2P: SAM bridge did not come up in time — continuing without I2P")
-        return False
+                logger.info("I2P: SAM bridge is up — internet peer discovery enabled")
+                return
+            time.sleep(5)
+        if not self._available:
+            logger.info(
+                "I2P: SAM bridge not yet ready — i2pd may still be building tunnels. "
+                "Internet discovery will enable automatically when ready."
+            )
 
     def _sam_reachable(self) -> bool:
         """Check if the i2pd SAM bridge is accepting connections."""
