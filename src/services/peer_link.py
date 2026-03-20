@@ -207,7 +207,7 @@ class PeerLinkService:
                 frame = struct.pack(_FRAME_FMT, seq, total) + chunk
                 packet = RNS.Packet(link, frame, context=RNS.Packet.DATA)
                 receipt = packet.send()
-                if receipt is None:
+                if receipt is False:
                     logger.error(f"Packet send failed (seq {seq}/{total}) to {peer_id}")
                     return False
 
