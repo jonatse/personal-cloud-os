@@ -280,6 +280,16 @@ class PeerLinkService:
             lambda msg, pkt, pid=peer_id: self._on_packet_received(pid, msg, pkt)
         )
 
+        # Identify ourselves to the remote peer so their set_remote_identified_callback fires.
+        # This is required for the remote side to register its inbound packet callback.
+        try:
+            identity = self._reticulum_service._identity if self._reticulum_service else None
+            if identity and hasattr(link, 'identify'):
+                link.identify(identity)
+                logger.debug(f"Identified ourselves to peer {peer_id[:12]}…")
+        except Exception as exc:
+            logger.debug(f"link.identify() failed: {exc}")
+
         # Classify the link and store the profile
         try:
             from transport.detector import classify_link
