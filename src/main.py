@@ -101,6 +101,7 @@ class PersonalCloudOS:
             event_bus, 
             self.reticulum_service
         )
+        self.reticulum_service.set_peer_link_service(self.peer_link_service)
         
         # Initialize sync engine (uses reticulum/peer links)
         self.sync_engine = SyncEngine(

@@ -91,6 +91,7 @@ class ReticulumPeerService:
         # Peer tracking
         self._peers: Dict[str, ReticulumPeer] = {}
         self._links: Dict[str, Any] = {}
+        self._peer_link_service = None  # set after PeerLinkService is created
         self._lock = threading.Lock()
         
         # State
@@ -228,6 +229,9 @@ class ReticulumPeerService:
         
         # Configure to prove all packets
         self._destination.set_proof_strategy(RNS.Destination.PROVE_ALL)
+
+        # Accept inbound links from peers and hand them to PeerLinkService
+        self._destination.set_link_established_callback(self._on_inbound_link)
         
         # Store destination hash
         self._destination_hash = self._destination.hash.hex()
@@ -318,6 +322,62 @@ class ReticulumPeerService:
                         self._event_loop
                     )
     
+    def set_peer_link_service(self, peer_link_service):
+        """Wire up PeerLinkService so inbound links can be forwarded to it."""
+        self._peer_link_service = peer_link_service
+
+    def _on_inbound_link(self, link):
+        """
+        Called by RNS when a remote peer opens a link to our destination.
+
+        Stores the link and forwards to PeerLinkService for Channel/Buffer setup.
+        """
+        try:
+            remote_hash = link.remote_identity.hash.hex() if link.remote_identity else None
+            if not remote_hash:
+                logger.warning("Inbound link has no remote_identity, ignoring")
+                return
+
+            # Find which peer this link is from by matching their identity hash
+            # against the identity embedded in their announced destination.
+            peer_id = None
+            peer_name = "Unknown"
+            with self._lock:
+                for pid, peer in self._peers.items():
+                    if peer.destination and peer.destination.identity:
+                        if peer.destination.identity.hash.hex() == remote_hash:
+                            peer_id = pid
+                            peer_name = peer.name
+                            break
+
+            if not peer_id:
+                logger.warning(f"Inbound link from unknown identity {remote_hash[:16]}..., ignoring")
+                return
+
+            logger.info(f"Accepted inbound link from peer: {peer_name}")
+
+            # Store in our own links dict
+            with self._lock:
+                self._links[peer_id] = link
+
+            # Hand off to PeerLinkService if available
+            pls = self._peer_link_service
+            if pls is not None:
+                with pls._lock:
+                    # Only register if PeerLinkService doesn't already have a link to this peer
+                    if peer_id not in pls._links:
+                        from services.peer_link import LinkInfo, LinkState
+                        pls._links[peer_id] = link
+                        pls._link_info[peer_id] = LinkInfo(peer_id=peer_id, peer_name=peer_name)
+                        pls._link_info[peer_id].state = LinkState.CONNECTING
+                # Now call _on_link_established (it acquires _lock internally)
+                # Only if this link isn't already tracked
+                if peer_id in pls._links and pls._links[peer_id] is link:
+                    pls._on_link_established(link)
+
+        except Exception as e:
+            logger.error(f"Error handling inbound link: {e}", exc_info=True)
+
     def _handle_announce(self, destination_hash, announced_identity, app_data):
         """Handle incoming peer announcement from Reticulum."""
         try:
