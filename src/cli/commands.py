@@ -116,7 +116,7 @@ class CommandHandler:
         if sync:
             status = sync.get_status()
             print(f"  {'Sync:':15} {status.state}")
-            print(f"  {'Files:':15} {status.files_synced}/{status.files_total}")
+            print(f"  {'Files:':15} {status.files_synced}/{status.files_local}")
         
         # Container
         container = getattr(self.app, 'container_manager', None)
@@ -175,7 +175,7 @@ class CommandHandler:
         if sync:
             status = sync.get_status()
             print(f"  State: {status.state}")
-            print(f"  Files synced: {status.files_synced}/{status.files_total}")
+            print(f"  Files synced: {status.files_synced}/{status.files_local}")
             print(f"  Sync dir: {sync.sync_dir}")
         else:
             print("  Sync engine not available.")
