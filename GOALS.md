@@ -155,7 +155,7 @@ technical rationale and dependency audit.
       `zeroconf`, `aiohttp`, `colorlog`, `prompt-toolkit`, `PyYAML`
       Keep: `rns`, `cryptography`, `pyserial`, `psutil`, `Pillow` (optional), `pystray` (optional)
 
-- [ ] **S2** Drop Pillow as a hard dependency
+- [x] **S2** Drop Pillow as a hard dependency
       Pillow is only used to draw a 16x16 tray icon in `tray/system_tray.py`.
       Replace with a pure-Python XBM/base64 icon or just skip the icon.
       This removes 3.4MB of package + 12 system library dependencies.

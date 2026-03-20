@@ -1,4 +1,13 @@
-"""System Tray for Personal Cloud OS."""
+"""
+System Tray for Personal Cloud OS.
+
+Uses a pure-Python icon (tray/icon.py) — no Pillow required.
+pystray is still needed for the tray itself but is optional:
+if not installed the app runs normally without a tray icon.
+
+Pillow has been removed as a dependency (was only used to draw
+a simple cloud shape). See tray/icon.py for the replacement.
+"""
 import os
 import sys
 import threading
@@ -9,122 +18,92 @@ from typing import Optional
 class SystemTray:
     """
     System tray icon for Personal Cloud OS.
-    
-    Shows running status and provides menu to open CLI.
+
+    Shows running status and provides a menu to open the CLI.
+    Falls back silently if pystray is not installed.
     """
-    
+
     def __init__(self, app):
-        """Initialize system tray."""
-        self.app = app
+        self.app     = app
         self.running = False
-        self.tray = None
-    
+        self.tray    = None
+
     def start(self):
-        """Start the system tray."""
+        """Start the system tray. Silent no-op if pystray not available."""
         if self.running:
             return
-        
-        self.running = True
-        
-        # Try to use pystray
         try:
             import pystray
-            from PIL import Image, ImageDraw
-            
-            # Create a simple icon
-            width = 64
-            height = 64
-            image = Image.new('RGB', (width, height), 'black')
-            dc = ImageDraw.Draw(image)
-            
-            # Draw a cloud shape
-            dc.ellipse([10, 20, 30, 40], fill='white')
-            dc.ellipse([20, 15, 45, 40], fill='white')
-            dc.ellipse([35, 20, 50, 35], fill='white')
-            dc.rectangle([20, 35, 45, 50], fill='white')
-            
-            # Create menu
-            menu = pystray.Menu(
-                pystray.MenuItem('Open CLI', self._open_cli),
-                pystray.MenuItem('Status', self._show_status),
-                pystray.Menu.SEPARATOR,
-                pystray.MenuItem('Quit', self._quit),
-            )
-            
-            self.tray = pystray.Icon(
-                "pcos",
-                image,
-                "Personal Cloud OS",
-                menu
-            )
-            
-            # Run in separate thread
-            self.tray_thread = threading.Thread(target=self.tray.run, daemon=True)
-            self.tray_thread.start()
-            
         except ImportError:
-            print("pystray not installed. Running without system tray.")
-            print("Install with: pip install pystray Pillow")
-            self.running = False
-    
-    def _open_cli(self):
-        """Open CLI interface."""
-        # Open CLI in new terminal
-        python = sys.executable
-        script = os.path.join(os.path.dirname(__file__), '..', 'main.py')
-        
-        terminals = [
-            ['gnome-terminal', '--', python, script, '--cli'],
-            ['konsole', '-e', python, script, '--cli'],
-            ['xterm', '-e', python, script, '--cli'],
-            ['mate-terminal', '--', python, script, '--cli'],
-        ]
-        
-        for term in terminals:
-            try:
-                subprocess.Popen(term, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                return
-            except FileNotFoundError:
-                continue
-        
-        print("Could not open terminal. Run: python main.py --cli")
-    
-    def _show_status(self):
-        """Show status."""
-        print("\nPersonal Cloud OS Status:")
-        print("  Running: Yes")
-        print("  Use 'python main.py --cli' for full interface")
-    
-    def _quit(self):
-        """Quit the application."""
-        self.stop()
-        # Stop the main app
-        if hasattr(self.app, 'stop'):
-            import asyncio
-            loop = asyncio.new_event_loop()
-            loop.run_until_complete(self.app.stop())
-        sys.exit(0)
-    
+            # pystray not installed — tray is optional, continue without it
+            return
+
+        self.running = True
+
+        from tray.icon import make_icon
+        image = make_icon(64)
+
+        menu = pystray.Menu(
+            pystray.MenuItem('Open CLI',  self._open_cli),
+            pystray.MenuItem('Status',    self._show_status),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem('Quit',      self._quit),
+        )
+
+        self.tray = pystray.Icon("pcos", image, "Personal Cloud OS", menu)
+
+        self.tray_thread = threading.Thread(
+            target=self.tray.run, daemon=True, name="systray")
+        self.tray_thread.start()
+
     def stop(self):
         """Stop the system tray."""
         self.running = False
         if self.tray:
-            self.tray.stop()
+            try:
+                self.tray.stop()
+            except Exception:
+                pass
 
+    # ------------------------------------------------------------------ #
+    # Menu actions
+    # ------------------------------------------------------------------ #
 
-def create_tray_icon():
-    """Create a simple tray icon image."""
-    from PIL import Image, ImageDraw
-    
-    width = 64
-    height = 64
-    image = Image.new('RGB', (width, height), '#2e3440')
-    dc = ImageDraw.Draw(image)
-    
-    # Draw cloud
-    dc.ellipse([12, 22, 28, 38], fill='#88c0d0')
-    dc.ellipse([22, 16, 44, 38], fill='#88c0d0')
-    dc.ellipse([36, 22, 50, 36], fill='#88c0d0')
-    dc.rectangle([22, 34, 44, 46], fill='#88c0d0')
-    
-    return image
+    def _open_cli(self):
+        """Open the CLI in a new terminal window."""
+        python = sys.executable
+        script = os.path.join(os.path.dirname(__file__), '..', 'main.py')
+        terminals = [
+            ['gnome-terminal', '--', python, script, '--cli'],
+            ['konsole',        '-e', python, script, '--cli'],
+            ['xterm',          '-e', python, script, '--cli'],
+            ['mate-terminal',  '--', python, script, '--cli'],
+            ['xfce4-terminal', '-e', python, script, '--cli'],
+        ]
+        for term in terminals:
+            try:
+                subprocess.Popen(term,
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+                return
+            except FileNotFoundError:
+                continue
+
+    def _show_status(self):
+        """Show basic status (tray context — no terminal available)."""
+        ret  = getattr(self.app, 'reticulum_service', None)
+        peers = len(ret.get_peers()) if ret else 0
+        # pystray doesn't give us a window — log it instead
+        import logging
+        logging.getLogger(__name__).info(
+            f"Status: running=True peers={peers}")
+
+    def _quit(self):
+        """Stop the application."""
+        self.stop()
+        loop = getattr(self.app, '_loop', None)
+        if loop and loop.is_running():
+            import asyncio
+            asyncio.run_coroutine_threadsafe(self.app.stop(), loop)
+        else:
+            sys.exit(0)
