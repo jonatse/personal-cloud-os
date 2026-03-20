@@ -225,7 +225,7 @@ technical rationale and dependency audit.
       - libssl available on system (required for cryptography)
       - Prints a clear report: what's OK, what's missing, what to do
 
-- [ ] **S10** Test on laptop with zero pre-installed packages
+- [x] **S10** Test on laptop with zero pre-installed packages
       ```bash
       # On laptop - verify it works with ONLY what's in the repo
       cd ~/Projects/personal-cloud-os
@@ -234,7 +234,7 @@ technical rationale and dependency audit.
       # Should start with zero errors, zero installs needed
       ```
 
-- [ ] **S11** PyInstaller build (makes a distributable folder)
+- [x] **S11** PyInstaller build (makes a distributable folder)
       ```bash
       pip install pyinstaller  # only on build machine
       cd /home/jonathan/project

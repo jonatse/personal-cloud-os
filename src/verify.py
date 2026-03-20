@@ -31,7 +31,12 @@ import struct
 SRC_DIR    = os.path.dirname(os.path.abspath(__file__))
 VENDOR_DIR = os.path.join(SRC_DIR, 'vendor')
 BIN_DIR    = os.path.join(SRC_DIR, 'bin')
-I2PD_BIN   = os.path.join(BIN_DIR, 'i2pd')
+# In a PyInstaller bundle, _MEIPASS points to the _internal dir
+_MEIPASS = getattr(sys, '_MEIPASS', None)
+if _MEIPASS:
+    I2PD_BIN = os.path.join(_MEIPASS, 'bin', 'i2pd')
+else:
+    I2PD_BIN = os.path.join(BIN_DIR, 'i2pd')
 
 PYTHON_MIN = (3, 10)
 

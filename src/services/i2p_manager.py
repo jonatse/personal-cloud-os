@@ -190,15 +190,24 @@ class I2PManager:
         """
         import shutil
 
-        # 1. Bundled binary — src/bin/i2pd relative to this file
-        #    This file is at src/services/i2p_manager.py
-        #    So bin/ is one directory up: src/bin/i2pd
-        bundled = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), '..', 'bin', 'i2pd')
-        )
-        if os.path.isfile(bundled) and os.access(bundled, os.X_OK):
-            logger.info(f"I2P: using bundled binary: {bundled}")
-            return bundled
+        # 1. Bundled binary — check multiple locations to handle both
+        #    normal source layout (src/bin/i2pd) and PyInstaller bundle
+        #    where files land in _internal/bin/i2pd
+        import sys as _sys
+        candidates = [
+            # Normal source layout: src/services/../bin/i2pd
+            os.path.abspath(
+                os.path.join(os.path.dirname(__file__), '..', 'bin', 'i2pd')
+            ),
+            # PyInstaller onedir: _internal/bin/i2pd next to executable
+            os.path.join(os.path.dirname(_sys.executable), 'bin', 'i2pd'),
+            # PyInstaller _internal layout
+            os.path.join(getattr(_sys, '_MEIPASS', ''), 'bin', 'i2pd'),
+        ]
+        for bundled in candidates:
+            if bundled and os.path.isfile(bundled) and os.access(bundled, os.X_OK):
+                logger.info(f"I2P: using bundled binary: {bundled}")
+                return bundled
 
         # 2. System PATH
         found = shutil.which("i2pd")

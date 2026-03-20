@@ -20,6 +20,7 @@ src/vendor/**/*.pyo
 dist/
 build/
 *.spec
+!pcos.spec
 
 # i2pd C++ source (build artefact — only bin/i2pd is committed)
 src/vendor/i2pd-src/
