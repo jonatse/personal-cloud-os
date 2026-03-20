@@ -126,6 +126,10 @@ class SyncEngine:
         self._running     = True
         self._event_loop  = asyncio.get_event_loop()
 
+        # Ensure data callback is registered even if peer.discovered fires late
+        if self.peer_link_service:
+            self.peer_link_service.register_link_callback(self._on_link_state_changed)
+
         await self._scan_local_files()
         self._sync_task = asyncio.create_task(self._sync_loop())
         logger.info("Sync engine started")
@@ -159,6 +163,18 @@ class SyncEngine:
         peer_id = event.data.get("id")
         if peer_id:
             self._remote_files.pop(peer_id, None)
+
+    def _on_link_state_changed(self, peer_id: str, state):
+        """
+        Called when any link changes state (from PeerLinkService).
+        Re-registers the data callback on CONNECTED so we never miss
+        data even if peer.discovered fired after the link was already up.
+        """
+        from services.peer_link import LinkState
+        if state == LinkState.CONNECTED:
+            logger.debug(f"Link connected to {peer_id[:12]}, ensuring data callback registered")
+            self.peer_link_service.register_data_callback(
+                peer_id, self._handle_peer_data)
 
     # ------------------------------------------------------------------ #
     # Sync loop                                                            #
