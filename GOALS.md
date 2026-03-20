@@ -194,7 +194,7 @@ technical rationale and dependency audit.
       These are only needed on the build machine (desktop). Nobody else
       needs them. After step S7 they can be removed.
 
-- [ ] **S7** Build static i2pd binary
+- [x] **S7** Build static i2pd binary
       ```bash
       cd /home/jonathan/project
       git submodule add https://github.com/PurpleI2P/i2pd src/vendor/i2pd-src
