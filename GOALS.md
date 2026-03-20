@@ -243,7 +243,7 @@ technical rationale and dependency audit.
       # zip it, send it to anyone, it just works
       ```
 
-- [ ] **S12** Document the build process in `BUILD.md`
+- [x] **S12** Document the build process in `BUILD.md`
       One file that explains how to rebuild everything from source.
       Someone with no context should be able to read it and produce
       a working distributable.
