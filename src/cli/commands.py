@@ -184,34 +184,131 @@ class CommandHandler:
         return True
     
     def cmd_network(self, args) -> bool:
-        """Show network info."""
-        print("\n" + "─" * 50)
-        print("  NETWORK INFORMATION")
-        print("─" * 50)
-        
+        """Show all network hardware and Reticulum status."""
+        import subprocess
+        import socket
+
+        W = 56
+        print("\n" + "─" * W)
+        print("  NETWORK")
+        print("─" * W)
+
+        # ── Reticulum identity ──────────────────────────────────────
         ret_service = getattr(self.app, 'reticulum_service', None)
         if ret_service:
-            identity = getattr(ret_service, '_identity_hash', 'Unknown')
+            identity  = getattr(ret_service, '_identity_hash',    'Unknown')
             dest_hash = getattr(ret_service, '_destination_hash', 'Unknown')
-            print(f"  Device Identity: {identity[:32]}...")
-            print(f"  Destination Hash: {dest_hash[:32]}...")
-            
-            # Show network interfaces
-            print(f"\n  Network Interfaces:")
-            print(f"    • AutoInterface (UDP broadcast)")
-            print(f"      - Used for local LAN peer discovery")
-            
-            # Show announce interval
-            interval = getattr(ret_service, '_announce_interval', 30)
-            print(f"\n  Announce Settings:")
-            print(f"    • Interval: {interval} seconds")
-            print(f"    • Status: Broadcasting presence")
-            
-            print(f"\n  Status: Online")
+            interval  = getattr(ret_service, '_announce_interval', 30)
+            print(f"  Reticulum     : Online")
+            print(f"  Identity      : {identity[:32]}...")
+            print(f"  Destination   : {dest_hash[:32]}...")
+            print(f"  Announce every: {interval}s")
         else:
-            print("  Reticulum not available.")
-        
-        print("─" * 50 + "\n")
+            print("  Reticulum     : Offline")
+        print("─" * W)
+
+        # ── Network interfaces ──────────────────────────────────────
+        try:
+            import psutil
+            addrs = psutil.net_if_addrs()
+            stats = psutil.net_if_stats()
+            print(f"  {'INTERFACE':<16} {'IP / MAC':<22} {'SPEED':>7}  STATUS")
+            print(f"  {'─'*16} {'─'*22} {'─'*7}  {'─'*6}")
+            SKIP = {'lo'}
+            for iface in sorted(addrs.keys()):
+                if iface in SKIP:
+                    continue
+                ipv4 = next((a.address for a in addrs[iface]
+                             if a.family == 2), "")           # AF_INET
+                mac  = next((a.address for a in addrs[iface]
+                             if a.family == 17), "")          # AF_PACKET
+                st   = stats.get(iface)
+                up   = ("UP  " if st and st.isup else "down")
+                spd  = f"{st.speed}M" if st and st.speed else "—"
+                addr = ipv4 or mac[:17] if mac else "—"
+                print(f"  {iface:<16} {addr:<22} {spd:>7}  {up}")
+        except ImportError:
+            print("  (psutil not installed — run: pip install psutil)")
+        except Exception as e:
+            print(f"  Interface error: {e}")
+        print("─" * W)
+
+        # ── Bluetooth ───────────────────────────────────────────────
+        try:
+            r = subprocess.run(["hciconfig", "-a"],
+                               capture_output=True, text=True, timeout=3)
+            if r.returncode == 0 and r.stdout.strip():
+                for line in r.stdout.splitlines():
+                    l = line.strip()
+                    if not l:
+                        continue
+                    if l.startswith("hci"):
+                        parts = l.split()
+                        dev   = parts[0].rstrip(":")
+                        bus   = next((p for p in parts if "Bus:" in p), "")
+                        print(f"  Bluetooth  {dev}: {bus}")
+                    elif "BD Address" in l:
+                        print(f"    Address : {l.split(':',1)[1].strip()}")
+                    elif "Name:" in l:
+                        print(f"    Name    : {l.split(':',1)[1].strip()}")
+                    elif "UP RUNNING" in l or "DOWN" in l:
+                        state = "UP" if "UP" in l else "DOWN"
+                        print(f"    State   : {state}")
+            else:
+                import os
+                if os.path.exists("/sys/class/bluetooth"):
+                    devs = os.listdir("/sys/class/bluetooth")
+                    for d in devs:
+                        print(f"  Bluetooth  {d}: present (hciconfig unavailable)")
+                else:
+                    print("  Bluetooth  : not detected")
+        except FileNotFoundError:
+            import os
+            if os.path.exists("/sys/class/bluetooth"):
+                devs = os.listdir("/sys/class/bluetooth")
+                for d in devs:
+                    print(f"  Bluetooth  {d}: present")
+            else:
+                print("  Bluetooth  : not detected")
+        except Exception as e:
+            print(f"  Bluetooth  : error ({e})")
+        print("─" * W)
+
+        # ── Audio (PipeWire / PulseAudio) ───────────────────────────
+        try:
+            r = subprocess.run(["pactl", "list", "short", "sinks"],
+                               capture_output=True, text=True, timeout=3)
+            r2 = subprocess.run(["pactl", "list", "short", "sources"],
+                                capture_output=True, text=True, timeout=3)
+            sinks   = [l for l in r.stdout.splitlines()  if l.strip()]
+            sources = [l for l in r2.stdout.splitlines() if l.strip()]
+
+            print(f"  AUDIO OUTPUT ({len(sinks)} sink{'s' if len(sinks)!=1 else ''}):")
+            for line in sinks:
+                parts = line.split()
+                name  = parts[1] if len(parts) > 1 else line
+                state = parts[4] if len(parts) > 4 else ""
+                # shorten alsa_output.pci-... to something readable
+                short = name.replace("alsa_output.","").replace("alsa_input.","")
+                short = short[:40]
+                print(f"    • {short:<40} [{state}]")
+
+            print(f"  AUDIO INPUT  ({len(sources)} source{'s' if len(sources)!=1 else ''}):")
+            for line in sources:
+                parts = line.split()
+                name  = parts[1] if len(parts) > 1 else line
+                state = parts[4] if len(parts) > 4 else ""
+                if ".monitor" in name:
+                    continue   # skip monitor sources (they mirror outputs)
+                short = name.replace("alsa_input.","").replace("alsa_output.","")
+                short = short[:40]
+                print(f"    • {short:<40} [{state}]")
+        except FileNotFoundError:
+            print("  Audio: pactl not found (PipeWire/PulseAudio not running?)")
+        except Exception as e:
+            print(f"  Audio: error ({e})")
+
+        print("─" * W + "\n")
         return True
     
     def cmd_device(self, args) -> bool:

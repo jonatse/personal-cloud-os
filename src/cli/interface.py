@@ -1,76 +1,73 @@
 """
 Interactive CLI Interface for Personal Cloud OS.
 
-Layout (curses split-screen):
+Layout:
 ┌──────────────────────────────────────────────────────────┐
-│  HEADER (fixed, ~7 lines)  — live stats, auto-refreshes  │
+│  Personal Cloud OS  │  hostname  │  Identity: abcd...    │  ← single title bar
 ├──────────────────────────────────────────────────────────┤
 │                                                          │
-│  OUTPUT PANE (scrolling)  — command results appear here  │
+│  (command output scrolls here)                          │
 │                                                          │
 ├──────────────────────────────────────────────────────────┤
-│  pcos ❯ _   (persistent input line at bottom)            │
+│  pcos ❯ _                                                │  ← persistent prompt
 └──────────────────────────────────────────────────────────┘
 
-The header redraws in place every REFRESH_INTERVAL seconds.
-The output pane scrolls normally. The prompt stays at the bottom.
+The title bar is one row: hostname, Reticulum status, peer count.
+It refreshes every REFRESH_INTERVAL seconds without touching the scroll pane.
+Type 'status' for a full status snapshot.
 """
 import curses
 import sys
 import os
+import re
 import logging
 import threading
 import time
 import socket
-import textwrap
 from collections import deque
 from .commands import CommandHandler
 
 logger = logging.getLogger(__name__)
 
-REFRESH_INTERVAL = 5   # seconds between header redraws
-HEADER_LINES     = 7   # rows reserved for the fixed header
-OUTPUT_COLOR     = 1   # curses colour pair indices
-HEADER_COLOR     = 2
-PEER_OK_COLOR    = 3
-PEER_WAIT_COLOR  = 4
-DIM_COLOR        = 5
+REFRESH_INTERVAL = 5   # seconds between title bar refresh
+TITLE_COLOR      = 1   # white on dark blue
+PEER_OK_COLOR    = 2   # green on dark blue
+PEER_WAIT_COLOR  = 3   # yellow on dark blue
+OUTPUT_COLOR     = 4   # default terminal colours
 
 
 class CLIInterface:
-    """Curses-based split-screen CLI with live header and scrolling output."""
+    """
+    Minimal curses CLI.
+
+    One title bar at the top (auto-refreshes).
+    Scrolling output in the middle.
+    Persistent prompt at the bottom.
+    """
 
     def __init__(self, app):
         self.app             = app
         self.command_handler = CommandHandler(app)
         self.running         = False
 
-        # Output buffer – stores plain-text lines for the scroll pane
         self._output_lines   = deque(maxlen=500)
         self._output_lock    = threading.Lock()
+        self._redraw_output  = threading.Event()
 
-        # Current input buffer
         self._input_buf      = ""
-        self._input_lock     = threading.Lock()
-
-        # Command history
         self._history        = []
         self._history_idx    = -1
 
-        # curses windows (set inside _run_curses)
-        self._scr            = None   # full screen
-        self._header_win     = None   # top fixed panel
-        self._output_win     = None   # scrolling middle panel
-        self._input_win      = None   # single-line bottom panel
-
-        self._needs_output_redraw = threading.Event()
+        self._title_win  = None
+        self._output_win = None
+        self._input_win  = None
 
     # ------------------------------------------------------------------ #
-    # Entry point
+    # Public
     # ------------------------------------------------------------------ #
 
     def start(self):
-        """Launch the curses UI. Blocks until the user exits."""
+        """Launch the curses UI. Blocks until exit."""
         self.running = True
         try:
             curses.wrapper(self._run_curses)
@@ -78,7 +75,6 @@ class CLIInterface:
             pass
         except Exception as e:
             import traceback
-            # curses is already torn down here, safe to print normally
             print(f"\nCLI crashed: {e}")
             print(traceback.format_exc())
         finally:
@@ -89,43 +85,67 @@ class CLIInterface:
         self.running = False
 
     # ------------------------------------------------------------------ #
-    # Curses main loop
+    # Curses setup
     # ------------------------------------------------------------------ #
 
     def _run_curses(self, stdscr):
         self._scr = stdscr
         self._setup_colors()
         self._build_windows()
-
-        # Intercept print() so commands write to output pane
         self._install_print_hook()
 
-        # Start background header refresh thread
-        t = threading.Thread(target=self._header_refresh_loop, daemon=True)
+        # Background title refresh
+        t = threading.Thread(target=self._title_refresh_loop, daemon=True)
         t.start()
 
-        # Initial render
-        self._draw_header()
-        self._write_output_line("  Personal Cloud OS — type 'help' for commands")
-        self._write_output_line("")
+        # Initial draw
+        self._draw_title()
+        self._write("  Personal Cloud OS  —  type 'help' for commands")
+        self._write("")
         self._draw_output()
         self._draw_input()
 
-        # Input loop
         self._input_loop()
-
-        # Restore print
         self._uninstall_print_hook()
 
+    def _setup_colors(self):
+        curses.start_color()
+        curses.use_default_colors()
+        curses.init_pair(TITLE_COLOR,     curses.COLOR_WHITE,  curses.COLOR_BLUE)
+        curses.init_pair(PEER_OK_COLOR,   curses.COLOR_GREEN,  curses.COLOR_BLUE)
+        curses.init_pair(PEER_WAIT_COLOR, curses.COLOR_YELLOW, curses.COLOR_BLUE)
+        curses.init_pair(OUTPUT_COLOR,    -1, -1)
+
+    def _build_windows(self):
+        rows, cols = self._scr.getmaxyx()
+
+        # Title: 1 row at the very top
+        self._title_win = curses.newwin(1, cols, 0, 0)
+        self._title_win.bkgd(' ', curses.color_pair(TITLE_COLOR))
+
+        # Output: everything between title and input
+        out_rows = max(1, rows - 2)
+        self._output_win = curses.newwin(out_rows, cols, 1, 0)
+        self._output_win.scrollok(True)
+        self._output_win.bkgd(' ', curses.color_pair(OUTPUT_COLOR))
+
+        # Input: last row
+        self._input_win = curses.newwin(1, cols, rows - 1, 0)
+        self._input_win.bkgd(' ', curses.color_pair(OUTPUT_COLOR))
+        self._input_win.nodelay(False)
+        self._input_win.timeout(200)
+
+    # ------------------------------------------------------------------ #
+    # Input loop
+    # ------------------------------------------------------------------ #
+
     def _input_loop(self):
-        """Read keystrokes, build input buffer, execute on Enter."""
         self._input_win.keypad(True)
         curses.curs_set(1)
 
         while self.running:
-            # Redraw output if flagged by background thread
-            if self._needs_output_redraw.is_set():
-                self._needs_output_redraw.clear()
+            if self._redraw_output.is_set():
+                self._redraw_output.clear()
                 self._draw_output()
                 self._draw_input()
 
@@ -141,15 +161,15 @@ class CLIInterface:
                 self._history_idx = -1
                 if cmd:
                     self._history.append(cmd)
-                    self._write_output_line(f"pcos ❯ {cmd}")
+                    self._write(f"pcos ❯ {cmd}")
                     try:
                         result = self.command_handler.execute(cmd)
                     except Exception as e:
                         import traceback
-                        self._write_output_line(f"  [ERROR] {e}")
+                        self._write(f"  [ERROR] {e}")
                         for line in traceback.format_exc().splitlines():
-                            self._write_output_line(f"  {line}")
-                        result = True  # don't exit on command errors
+                            self._write(f"  {line}")
+                        result = True
                     self._draw_output()
                     if not result:
                         self.running = False
@@ -163,17 +183,15 @@ class CLIInterface:
 
             elif ch == curses.KEY_UP:
                 if self._history:
-                    self._history_idx = min(
-                        self._history_idx + 1, len(self._history) - 1)
-                    self._input_buf = self._history[
-                        -(self._history_idx + 1)]
+                    self._history_idx = min(self._history_idx + 1,
+                                            len(self._history) - 1)
+                    self._input_buf = self._history[-(self._history_idx + 1)]
                     self._draw_input()
 
             elif ch == curses.KEY_DOWN:
                 if self._history_idx > 0:
                     self._history_idx -= 1
-                    self._input_buf = self._history[
-                        -(self._history_idx + 1)]
+                    self._input_buf = self._history[-(self._history_idx + 1)]
                 elif self._history_idx == 0:
                     self._history_idx = -1
                     self._input_buf = ""
@@ -181,7 +199,7 @@ class CLIInterface:
 
             elif ch == curses.KEY_RESIZE:
                 self._build_windows()
-                self._draw_header()
+                self._draw_title()
                 self._draw_output()
                 self._draw_input()
 
@@ -190,74 +208,30 @@ class CLIInterface:
                 self._draw_input()
 
     # ------------------------------------------------------------------ #
-    # Window construction
+    # Title bar
     # ------------------------------------------------------------------ #
 
-    def _build_windows(self):
-        """Create / recreate the three panels after resize."""
-        rows, cols = self._scr.getmaxyx()
-
-        # Header: top HEADER_LINES rows
-        self._header_win = curses.newwin(HEADER_LINES, cols, 0, 0)
-        self._header_win.bkgd(' ', curses.color_pair(HEADER_COLOR))
-
-        # Output: between header and input line
-        out_rows = max(1, rows - HEADER_LINES - 1)
-        self._output_win = curses.newwin(out_rows, cols, HEADER_LINES, 0)
-        self._output_win.scrollok(True)
-        self._output_win.bkgd(' ', curses.color_pair(OUTPUT_COLOR))
-
-        # Input: last row
-        self._input_win = curses.newwin(1, cols, rows - 1, 0)
-        self._input_win.bkgd(' ', curses.color_pair(OUTPUT_COLOR))
-        self._input_win.nodelay(False)
-        self._input_win.timeout(200)
-
-    def _setup_colors(self):
-        curses.start_color()
-        curses.use_default_colors()
-        # pair(OUTPUT_COLOR)  – output pane: default on default
-        curses.init_pair(OUTPUT_COLOR,  -1, -1)
-        # pair(HEADER_COLOR)  – header bg: white text on dark blue
-        curses.init_pair(HEADER_COLOR,  curses.COLOR_WHITE,  curses.COLOR_BLUE)
-        # pair(PEER_OK_COLOR) – green text (peers connected)
-        curses.init_pair(PEER_OK_COLOR, curses.COLOR_GREEN,  curses.COLOR_BLUE)
-        # pair(PEER_WAIT_COLOR)– yellow text (waiting)
-        curses.init_pair(PEER_WAIT_COLOR, curses.COLOR_YELLOW, curses.COLOR_BLUE)
-        # pair(DIM_COLOR)     – dim text in header
-        curses.init_pair(DIM_COLOR,     curses.COLOR_CYAN,   curses.COLOR_BLUE)
-
-    # ------------------------------------------------------------------ #
-    # Header drawing (runs in background thread + on resize)
-    # ------------------------------------------------------------------ #
-
-    def _header_refresh_loop(self):
+    def _title_refresh_loop(self):
         while self.running:
             time.sleep(REFRESH_INTERVAL)
             if self.running:
-                self._draw_header()
-                self._draw_input()   # keep cursor in right place
+                self._draw_title()
+                self._draw_input()
 
-    def _draw_header(self):
-        """Redraw the fixed header panel in place — no flicker."""
-        if not self._header_win:
+    def _draw_title(self):
+        if not self._title_win:
             return
         try:
-            win = self._header_win
-            win.erase()
+            win = self._title_win
             cols = win.getmaxyx()[1]
+            win.erase()
 
-            ret     = getattr(self.app, 'reticulum_service', None)
-            dev_mgr = getattr(self.app, 'device_manager', None)
-            sync    = getattr(self.app, 'sync_engine', None)
-            cont    = getattr(self.app, 'container_manager', None)
+            ret  = getattr(self.app, 'reticulum_service', None)
+            host = socket.gethostname()
 
-            hostname  = socket.gethostname()
-            identity  = "—"
-            dest      = "—"
-            if ret:
-                identity = getattr(ret, '_identity_hash', '—')[:20] + "..."
-                dest     = getattr(ret, '_destination_hash', '—')[:20] + "..."
+            identity = "—"
+            if ret and hasattr(ret, '_identity_hash'):
+                identity = ret._identity_hash[:16] + "..."
 
             peers = []
             if ret and hasattr(ret, 'get_peers'):
@@ -270,75 +244,48 @@ class CLIInterface:
                 except Exception:
                     pass
 
-            sync_state = "—"
-            if sync:
-                try:
-                    sync_state = sync.get_status().state
-                except Exception:
-                    pass
-
-            net_state  = ("Online"  if ret and ret.is_running() else "Offline")
-            cont_state = ("Running" if cont and cont.is_running() else "Stopped")
-
-            # ── Row 0: title bar ──────────────────────────────────────────
-            title = f"  Personal Cloud OS  │  {hostname}  │  {net_state}"
-            win.addstr(0, 0, title.ljust(cols), curses.color_pair(HEADER_COLOR) | curses.A_BOLD)
-
-            # ── Row 1: identity ───────────────────────────────────────────
-            win.addstr(1, 2, "Identity : ", curses.color_pair(DIM_COLOR))
-            win.addstr(identity, curses.color_pair(HEADER_COLOR))
-            win.addstr("   Dest : ", curses.color_pair(DIM_COLOR))
-            win.addstr(dest, curses.color_pair(HEADER_COLOR))
-
-            # ── Row 2: peers ──────────────────────────────────────────────
             peer_count = len(peers)
-            peer_color = curses.color_pair(PEER_OK_COLOR) if peer_count else curses.color_pair(PEER_WAIT_COLOR)
-            win.addstr(2, 2, "Peers    : ", curses.color_pair(DIM_COLOR))
-            dot = "● " if peer_count else "○ "
-            win.addstr(dot, peer_color | curses.A_BOLD)
+
+            # Build title string
+            left  = f"  pcos  │  {host}  │  {identity}"
             if peer_count:
-                names = "  ".join(p.name for p in peers[:4])
-                if peer_count > 4:
-                    names += f"  (+{peer_count-4} more)"
-                win.addstr(f"{peer_count} connected  — {names}", peer_color)
+                peer_str = "  ".join(p.name for p in peers[:3])
+                if peer_count > 3:
+                    peer_str += f" +{peer_count-3}"
+                right = f"peers: {peer_count} ({peer_str})  "
             else:
-                win.addstr("waiting for peers...", peer_color)
+                right = "peers: waiting...  "
 
-            # ── Row 3: sync / container ───────────────────────────────────
-            win.addstr(3, 2, "Sync     : ", curses.color_pair(DIM_COLOR))
-            win.addstr(sync_state.ljust(12), curses.color_pair(HEADER_COLOR))
-            win.addstr("   Container : ", curses.color_pair(DIM_COLOR))
-            win.addstr(cont_state, curses.color_pair(HEADER_COLOR))
+            # Pad middle
+            pad = cols - len(left) - len(right)
+            line = left + (" " * max(1, pad)) + right
 
-            # ── Row 4: divider ────────────────────────────────────────────
-            win.addstr(4, 0, "─" * cols, curses.color_pair(DIM_COLOR))
+            win.addstr(0, 0, line[:cols-1], curses.color_pair(TITLE_COLOR) | curses.A_BOLD)
 
-            # ── Row 5: hint ───────────────────────────────────────────────
-            hint = "  help · peers · sync · network · device · exit · quit"
-            win.addstr(5, 0, hint[:cols-1], curses.color_pair(DIM_COLOR))
-
-            # ── Row 6: divider ────────────────────────────────────────────
-            win.addstr(6, 0, "─" * cols, curses.color_pair(DIM_COLOR))
+            # Colour the peer count portion
+            peer_col = (curses.color_pair(PEER_OK_COLOR)
+                        if peer_count else curses.color_pair(PEER_WAIT_COLOR))
+            peer_x = cols - len(right)
+            if 0 < peer_x < cols - 1:
+                win.addstr(0, peer_x, right[:cols - peer_x - 1], peer_col | curses.A_BOLD)
 
             win.noutrefresh()
             curses.doupdate()
         except Exception as e:
-            logger.debug(f"Header draw error: {e}")
+            logger.debug(f"Title draw error: {e}")
 
     # ------------------------------------------------------------------ #
     # Output pane
     # ------------------------------------------------------------------ #
 
-    def _write_output_line(self, text):
-        """Append a line to the output buffer (thread-safe)."""
+    def _write(self, text):
+        """Append a plain-text line to the output buffer (thread-safe)."""
         with self._output_lock:
-            # Strip ANSI escapes — curses does its own colouring
-            clean = self._strip_ansi(text)
+            clean = _strip_ansi(text)
             self._output_lines.append(clean)
-        self._needs_output_redraw.set()
+        self._redraw_output.set()
 
     def _draw_output(self):
-        """Redraw the scrolling output pane."""
         if not self._output_win:
             return
         try:
@@ -346,10 +293,10 @@ class CLIInterface:
             rows, cols = win.getmaxyx()
             win.erase()
             with self._output_lock:
-                visible = list(self._output_lines)[-(rows):]
+                visible = list(self._output_lines)[-rows:]
             for i, line in enumerate(visible):
                 try:
-                    win.addstr(i, 0, line[:cols-1])
+                    win.addstr(i, 0, line[:cols - 1])
                 except curses.error:
                     pass
             win.noutrefresh()
@@ -362,7 +309,6 @@ class CLIInterface:
     # ------------------------------------------------------------------ #
 
     def _draw_input(self):
-        """Redraw the prompt line and reposition the cursor."""
         if not self._input_win:
             return
         try:
@@ -378,51 +324,44 @@ class CLIInterface:
             logger.debug(f"Input draw error: {e}")
 
     # ------------------------------------------------------------------ #
-    # print() hook — redirect commands' print() into output pane
+    # print() hook
     # ------------------------------------------------------------------ #
 
     def _install_print_hook(self):
         self._real_stdout = sys.stdout
-        cli = self
+        writer = self._write
 
-        class OutputRedirect:
+        class _Redirect:
             def write(self, text):
-                if text and text != '\n':
+                if text == '\n':
+                    writer("")
+                elif text:
                     for line in text.splitlines():
-                        cli._write_output_line(line)
-                elif text == '\n':
-                    cli._write_output_line("")
+                        writer(line)
             def flush(self):
                 pass
             def fileno(self):
-                return self._real_stdout.fileno() if hasattr(cli, '_real_stdout') else 1
+                return 1  # pretend to be stdout fd
 
-        sys.stdout = OutputRedirect()
+        sys.stdout = _Redirect()
 
     def _uninstall_print_hook(self):
         sys.stdout = self._real_stdout
 
-    # ------------------------------------------------------------------ #
-    # Helpers
-    # ------------------------------------------------------------------ #
-
-    @staticmethod
-    def _strip_ansi(text):
-        """Remove ANSI escape codes from a string."""
-        import re
-        return re.sub(r'\x1b\[[0-9;]*[mAJK]', '', text)
-
 
 # ------------------------------------------------------------------ #
-# Open in new terminal
+# Helpers
 # ------------------------------------------------------------------ #
+
+def _strip_ansi(text):
+    return re.sub(r'\x1b\[[0-9;]*[mAJK]', '', text)
+
 
 def open_cli(app):
     """Open the CLI in a new terminal window."""
     import subprocess
     python = sys.executable
     script = os.path.join(os.path.dirname(__file__), '..', 'main.py')
-
     terminals = [
         ['gnome-terminal', '--', python, script, '--cli'],
         ['konsole',        '-e', python, script, '--cli'],
@@ -437,7 +376,5 @@ def open_cli(app):
             return True
         except FileNotFoundError:
             continue
-
-    print("Could not open new terminal. Opening in current terminal...")
     CLIInterface(app).start()
     return True
