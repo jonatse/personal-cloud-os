@@ -170,7 +170,7 @@ technical rationale and dependency audit.
       └── psutil/          ← includes _psutil_linux.abi3.so (needs only libc)
       ```
 
-- [ ] **S4** Copy packages into `src/vendor/`
+- [x] **S4** Copy packages into `src/vendor/`
       - RNS from `/home/jonathan/.local/lib/python3.13/site-packages/RNS`
       - serial from `/home/jonathan/.local/lib/python3.13/site-packages/serial`
       - cryptography from `/usr/lib/python3/dist-packages/cryptography`
