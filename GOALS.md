@@ -217,7 +217,7 @@ technical rationale and dependency audit.
           return bundled
       ```
 
-- [ ] **S9** Write `src/verify.py` — startup self-check
+- [x] **S9** Write `src/verify.py` — startup self-check
       Run on every startup, checks:
       - Python >= 3.10
       - vendor/ packages present and importable

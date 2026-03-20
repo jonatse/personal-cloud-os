@@ -17,6 +17,27 @@ if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 # ── End vendor bootstrap ───────────────────────────────────────────────────
 
+# ── Startup self-check ─────────────────────────────────────────────────────
+# Run verify.py silently at startup. Logs warnings/failures but never
+# prevents the app from starting — the user can still run manually.
+def _run_startup_verify():
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "verify",
+            os.path.join(_SRC_DIR, "verify.py")
+        )
+        verify = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verify)
+        report = verify.run_checks(quiet=True)
+        if not report.success:
+            print(f"\n[WARN] Startup checks failed — run 'python3 verify.py' for details")
+    except Exception:
+        pass   # verify.py missing or broken — not fatal
+
+_run_startup_verify()
+# ── End startup self-check ─────────────────────────────────────────────────
+
 import asyncio
 import logging
 import signal
