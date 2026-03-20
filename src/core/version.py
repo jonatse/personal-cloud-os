@@ -1,3 +1,3 @@
 """Version information for Personal Cloud OS."""
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __app_name__ = "Personal Cloud OS"

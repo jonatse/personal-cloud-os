@@ -106,8 +106,6 @@ class ReticulumPeerService:
         self._event_loop = None
         self._peer_timeout = config.get("reticulum.peer_timeout", 300)  # 5 min default
         self._peer_link_service = None  # set after PeerLinkService is created
-        # Inbound links pending peer discovery (identity_hash_hex → (link, identity))
-        self._pending_inbound: Dict[str, Any] = {}
 
         logger.info("ReticulumPeerService initialized")
     
@@ -327,86 +325,65 @@ class ReticulumPeerService:
     def _on_inbound_link(self, link):
         """
         Called by RNS when a remote peer opens a link to our destination.
-
-        We can't identify the peer yet (identity proof is async), so we
-        register set_remote_identified_callback to be notified when
-        proof completes, then wire the link into PeerLinkService.
+        Immediately register a packet callback so we can receive data.
+        We identify the peer lazily — either via our outbound link match
+        or via the remote_identity once it becomes available.
         """
-        logger.debug("Inbound link received — waiting for remote identity proof")
+        logger.debug("Inbound link received from unknown peer")
 
-        def _on_identified(link, identity):
-            """Called after remote identity is proven."""
-            try:
-                if identity is None:
-                    logger.warning("Inbound link identity proof returned None")
-                    return
+        pls = self._peer_link_service
+        if pls is None:
+            return
 
-                remote_hash = identity.hash.hex()
+        def _route_packet(message, packet):
+            """Route an inbound packet to the right peer's data callback."""
+            # Find which peer this link belongs to by matching link objects
+            # in both our own links dict and PeerLinkService's.
+            peer_id = None
 
-                # Find the peer matching this identity
-                peer_id   = None
-                peer_name = "unknown"
-                with self._lock:
-                    for pid, peer in self._peers.items():
-                        if peer.destination and peer.destination.identity:
-                            if peer.destination.identity.hash.hex() == remote_hash:
-                                peer_id   = pid
-                                peer_name = peer.name
-                                break
+            # First check reticulum_peer's own link registry
+            with self._lock:
+                for pid, lnk in self._links.items():
+                    if lnk is link:
+                        peer_id = pid
+                        break
 
-                if not peer_id:
-                    # Peer not yet discovered — stash for when their announce arrives
-                    logger.debug(
-                        f"Inbound link from unknown identity {remote_hash[:16]}… "
-                        f"— queued until peer is discovered")
-                    with self._lock:
-                        self._pending_inbound[remote_hash] = (link, identity)
-                    return
+            # Fall back to PeerLinkService's registry
+            if peer_id is None:
+                peer_id = pls._peer_id_for_link(link)
 
-                logger.info(f"Inbound link identified: {peer_name}")
+            # If still unknown, try to match by remote identity
+            if peer_id is None:
+                try:
+                    rid = link.get_remote_identity()
+                    if rid:
+                        rhash = rid.hash.hex()
+                        with self._lock:
+                            for pid, peer in self._peers.items():
+                                if (peer.destination and peer.destination.identity
+                                        and peer.destination.identity.hash.hex() == rhash):
+                                    peer_id = pid
+                                    # Register this link so future lookups are fast
+                                    self._links[peer_id] = link
+                                    with pls._lock:
+                                        if peer_id not in pls._links:
+                                            from services.peer_link import LinkInfo, LinkState
+                                            pls._links[peer_id] = link
+                                            pls._link_info[peer_id] = LinkInfo(
+                                                peer_id=peer_id,
+                                                peer_name=peer.name)
+                                    break
+                except Exception:
+                    pass
 
-                # Store in our links dict
-                with self._lock:
-                    self._links[peer_id] = link
+            if peer_id is None:
+                logger.debug("Inbound packet from unidentified peer — dropping")
+                return
 
-                # Hand to PeerLinkService — always register packet callback
-                # on the inbound link even if we also have an outbound link,
-                # because packets from the remote arrive on THIS link object.
-                pls = self._peer_link_service
-                if pls is not None:
-                    with pls._lock:
-                        if peer_id not in pls._links:
-                            # No outbound link yet — store inbound as primary
-                            from services.peer_link import LinkInfo, LinkState
-                            pls._links[peer_id]     = link
-                            pls._link_info[peer_id] = LinkInfo(
-                                peer_id=peer_id, peer_name=peer_name)
-                            pls._link_info[peer_id].state = LinkState.CONNECTING
-                            # Full _on_link_established handles the rest
-                            pls._on_link_established(link)
-                        else:
-                            # Outbound link exists — register packet callback
-                            # directly on the inbound link so we receive data
-                            # sent by the remote over their outbound path.
-                            import struct as _struct
-                            link.set_packet_callback(
-                                lambda msg, pkt, pid=peer_id:
-                                    pls._on_packet_received(pid, msg, pkt)
-                            )
-                            # Also ensure data callback is registered
-                            pls.register_data_callback(
-                                peer_id, pls._data_callbacks.get(peer_id)
-                                or (lambda pid, d: None)
-                            )
-                            logger.debug(
-                                f"Inbound link packet callback registered for "
-                                f"existing peer {peer_id[:12]}")
+            pls._on_packet_received(peer_id, message, packet)
 
-            except Exception as exc:
-                logger.error(f"Error in inbound link identification: {exc}",
-                             exc_info=True)
-
-        link.set_remote_identified_callback(_on_identified)
+        link.set_packet_callback(_route_packet)
+        logger.debug("Inbound link: packet callback registered")
 
     def _handle_announce(self, destination_hash, announced_identity, app_data):
         """Handle incoming peer announcement from Reticulum."""
@@ -468,36 +445,6 @@ class ReticulumPeerService:
                         import traceback
                         logger.debug(traceback.format_exc())
 
-                    # Wire up any pending inbound link from this peer
-                    pending = None
-                    with self._lock:
-                        # Match by the peer's identity hash (not destination hash)
-                        peer_identity_hash = announced_identity.hash.hex() if announced_identity else None
-                        if peer_identity_hash and peer_identity_hash in self._pending_inbound:
-                            pending = self._pending_inbound.pop(peer_identity_hash)
-                    if pending:
-                        pending_link, pending_identity = pending
-                        logger.info(f"Wiring up pending inbound link for {peer_name}")
-                        pls = self._peer_link_service
-                        if pls is not None:
-                            call_established = False
-                            with pls._lock:
-                                if peer_hash not in pls._links:
-                                    from services.peer_link import LinkInfo, LinkState
-                                    pls._links[peer_hash]     = pending_link
-                                    pls._link_info[peer_hash] = LinkInfo(
-                                        peer_id=peer_hash, peer_name=peer_name)
-                                    pls._link_info[peer_hash].state = LinkState.CONNECTING
-                                    call_established = True
-                                else:
-                                    pending_link.set_packet_callback(
-                                        lambda msg, pkt, pid=peer_hash:
-                                            pls._on_packet_received(pid, msg, pkt)
-                                    )
-                                    logger.debug(f"Packet callback registered on pending inbound link for {peer_name}")
-                            # Call outside the lock to avoid deadlock
-                            if call_established:
-                                pls._on_link_established(pending_link)
                 else:
                     # Known peer - only update last_seen silently.
                     # Only publish peer.updated if name or status actually changed.
