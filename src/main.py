@@ -102,13 +102,18 @@ class PersonalCloudOS:
             self.reticulum_service
         )
         self.reticulum_service.set_peer_link_service(self.peer_link_service)
+
+        # Transport manager — sits above PeerLinkService, below SyncEngine
+        from transport import TransportManager
+        self.transport_manager = TransportManager(self.peer_link_service, event_bus)
         
         # Initialize sync engine (uses reticulum/peer links)
         self.sync_engine = SyncEngine(
-            self.config, 
-            event_bus, 
-            self.reticulum_service,  # Changed from discovery_service
-            self.peer_link_service
+            self.config,
+            event_bus,
+            self.reticulum_service,
+            peer_link_service=self.peer_link_service,
+            transport_manager=self.transport_manager,
         )
         
         # Initialize container manager
@@ -174,6 +179,16 @@ class PersonalCloudOS:
             await self.peer_link_service.start()
         except Exception as e:
             logger.error(f"Failed to start peer link service: {e}")
+
+        # When a link is established, set up RNS.Resource receiver for sync
+        def _on_link_for_resources(peer_id, state):
+            from services.peer_link import LinkState
+            if state == LinkState.CONNECTED:
+                try:
+                    self.sync_engine.setup_resource_receiver(peer_id)
+                except Exception as e:
+                    logger.debug(f"setup_resource_receiver error: {e}")
+        self.peer_link_service.register_link_callback(_on_link_for_resources)
         
         # Start sync engine
         try:
@@ -198,6 +213,13 @@ class PersonalCloudOS:
         logger.info("Stopping services...")
         self._running = False
         
+        # Stop transport manager (tears down WireGuard tunnels, swarm)
+        try:
+            if hasattr(self, 'transport_manager'):
+                self.transport_manager.stop()
+        except Exception as e:
+            logger.error(f"Error stopping transport manager: {e}")
+
         # Stop sync engine
         try:
             await self.sync_engine.stop()
