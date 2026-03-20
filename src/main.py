@@ -50,7 +50,6 @@ from core.device_manager import DeviceManager
 from core.version import __version__, __app_name__
 from services.reticulum_peer import ReticulumPeerService
 from services.i2p_manager import I2PManager
-from services.peer_link import PeerLinkService
 from services.sync import SyncEngine
 from container.manager import ContainerManager
 from cli.interface import CLIInterface
@@ -95,30 +94,17 @@ class PersonalCloudOS:
         # Initialize I2P manager (internet tunneling — gracefully skipped if i2pd not installed)
         self.i2p_manager = I2PManager(self.config)
         
-        # Initialize peer link service (encrypted P2P)
-        self.peer_link_service = PeerLinkService(
-            self.config, 
-            event_bus, 
-            self.reticulum_service
-        )
-        self.reticulum_service.set_peer_link_service(self.peer_link_service)
-        # Give SyncEngine a back-reference on PeerLinkService so inbound
-        # resource callbacks can find it.
-        # (set after sync_engine is created below)
-
-        # Transport manager — sits above PeerLinkService, below SyncEngine
+        # Transport manager — link classification and WireGuard (future)
         from transport import TransportManager
-        self.transport_manager = TransportManager(self.peer_link_service, event_bus)
-        
-        # Initialize sync engine (uses reticulum/peer links)
+        self.transport_manager = TransportManager(self.reticulum_service, event_bus)
+
+        # Sync engine — uses RNS natively via reticulum_service
         self.sync_engine = SyncEngine(
             self.config,
             event_bus,
             self.reticulum_service,
-            peer_link_service=self.peer_link_service,
             transport_manager=self.transport_manager,
         )
-        self.peer_link_service._sync_engine = self.sync_engine
         
         # Initialize container manager
         self.container_manager = ContainerManager(self.config, event_bus)
@@ -178,12 +164,6 @@ class PersonalCloudOS:
             except Exception as e:
                 logger.error(f"Failed to start container: {e}")
         
-        # Start peer link service
-        try:
-            await self.peer_link_service.start()
-        except Exception as e:
-            logger.error(f"Failed to start peer link service: {e}")
-
         # Start sync engine
         try:
             await self.sync_engine.start()
@@ -219,12 +199,6 @@ class PersonalCloudOS:
             await self.sync_engine.stop()
         except Exception as e:
             logger.error(f"Error stopping sync engine: {e}")
-        
-        # Stop peer link service
-        try:
-            await self.peer_link_service.stop()
-        except Exception as e:
-            logger.error(f"Error stopping peer link service: {e}")
         
         # Stop Reticulum service
         try:
