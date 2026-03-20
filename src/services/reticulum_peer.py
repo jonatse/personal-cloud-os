@@ -106,6 +106,8 @@ class ReticulumPeerService:
         self._event_loop = None
         self._peer_timeout = config.get("reticulum.peer_timeout", 300)  # 5 min default
         self._peer_link_service = None  # set after PeerLinkService is created
+        # Inbound links pending peer discovery (identity_hash_hex → (link, identity))
+        self._pending_inbound: Dict[str, Any] = {}
 
         logger.info("ReticulumPeerService initialized")
     
@@ -353,8 +355,12 @@ class ReticulumPeerService:
                                 break
 
                 if not peer_id:
-                    logger.warning(
-                        f"Inbound link from unknown identity {remote_hash[:16]}…")
+                    # Peer not yet discovered — stash for when their announce arrives
+                    logger.debug(
+                        f"Inbound link from unknown identity {remote_hash[:16]}… "
+                        f"— queued until peer is discovered")
+                    with self._lock:
+                        self._pending_inbound[remote_hash] = (link, identity)
                     return
 
                 logger.info(f"Inbound link identified: {peer_name}")
@@ -461,6 +467,33 @@ class ReticulumPeerService:
                         logger.error(f"Failed to publish peer.discovered event: {e}")
                         import traceback
                         logger.debug(traceback.format_exc())
+
+                    # Wire up any pending inbound link from this peer
+                    pending = None
+                    with self._lock:
+                        # Match by the peer's identity hash (not destination hash)
+                        peer_identity_hash = announced_identity.hash.hex() if announced_identity else None
+                        if peer_identity_hash and peer_identity_hash in self._pending_inbound:
+                            pending = self._pending_inbound.pop(peer_identity_hash)
+                    if pending:
+                        pending_link, pending_identity = pending
+                        logger.info(f"Wiring up pending inbound link for {peer_name}")
+                        pls = self._peer_link_service
+                        if pls is not None:
+                            with pls._lock:
+                                if peer_hash not in pls._links:
+                                    from services.peer_link import LinkInfo, LinkState
+                                    pls._links[peer_hash]     = pending_link
+                                    pls._link_info[peer_hash] = LinkInfo(
+                                        peer_id=peer_hash, peer_name=peer_name)
+                                    pls._link_info[peer_hash].state = LinkState.CONNECTING
+                                    pls._on_link_established(pending_link)
+                                else:
+                                    pending_link.set_packet_callback(
+                                        lambda msg, pkt, pid=peer_hash:
+                                            pls._on_packet_received(pid, msg, pkt)
+                                    )
+                                    logger.debug(f"Packet callback registered on pending inbound link for {peer_name}")
                 else:
                     # Known peer - only update last_seen silently.
                     # Only publish peer.updated if name or status actually changed.
