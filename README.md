@@ -1,245 +1,281 @@
 # Personal Cloud OS
 
-A self-contained Linux environment with ZeroTrust networking that runs in the background, automatically discovers peers on your network, syncs files, and provides your personal Linux environment.
+A self-contained, ZeroTrust peer-to-peer networking layer for personal devices.
+Devices find each other automatically over any local network using
+[Reticulum](https://reticulum.network/) — no central server, no port-forwarding,
+no cloud accounts required.
+
+---
+
+## What Works Right Now
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Reticulum ZeroTrust networking | ✅ Working | Identity-based, encrypted by default |
+| LAN peer discovery | ✅ Working | Devices find each other automatically |
+| Peer announcements | ✅ Working | Every device announces every 30s |
+| Persistent device identity | ✅ Working | Survives restarts |
+| Device inventory | ✅ Working | Tracks known devices + hardware info |
+| Curses CLI (split-screen) | ✅ Working | Live header, scrolling output, persistent prompt |
+| CLI command: `peers` | ✅ Working | Lists discovered peers with ID |
+| CLI command: `network` | ✅ Working | Shows identity hash, destination, announce interval |
+| CLI command: `device` | ✅ Working | Shows local device info |
+| CLI command: `status` | ✅ Working | Reticulum, peers, sync, container at a glance |
+| CLI command: `sync` | ✅ Working | Shows sync state (engine runs, no transfers yet) |
+| CLI command: `container` | ✅ Working | Shows container state |
+| File sync engine (structure) | 🔧 Partial | Scans files, peer protocol defined, transfers broken |
+| Encrypted P2P links | 🔧 Partial | `create_link()` exists, destination type bug |
+| System tray icon | 🔧 Partial | Works if pystray + Pillow installed |
+| Container runtime | ❌ Requires Docker | P0 priority: replace with self-contained runtime |
+| Resource sharing | ❌ Not started | Phase 3 goal |
+| Session persistence | ❌ Not started | Phase 3 goal |
+
+---
+
+## Quick Start
+
+### Requirements
+
+```
+Python 3.10+
+pip install -r requirements.txt
+```
+
+**Key dependencies:**
+- `rns` — Reticulum networking stack
+- `psutil` — hardware/network detection
+- `pystray` + `Pillow` — optional system tray icon
+
+### Run
+
+```bash
+cd src/
+
+# Interactive CLI (recommended)
+python3 main.py --cli
+
+# Background service only (no CLI)
+python3 main.py
+
+# Background + system tray icon
+python3 main.py --tray
+```
+
+### Run on second device
+
+Repeat the same steps on any other device on the same LAN.
+They will find each other automatically within ~30 seconds.
+
+---
+
+## CLI Reference
+
+The CLI uses a split-screen curses layout:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Personal Cloud OS  │  hostname  │  Online                  │  ← live header
+│  Identity : abcd1234...   Dest : ef567890...                │
+│  Peers    : ● 1 connected  — pop-osmark                     │  ← green = connected
+│  Sync     : idle           Container : Stopped              │
+│  ──────────────────────────────────────────────────────────  │
+│  help · peers · sync · network · device · exit · quit       │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  (command output scrolls here)                             │
+│                                                             │
+├─────────────────────────────────────────────────────────────┤
+│  pcos ❯ _                                                   │  ← persistent prompt
+└─────────────────────────────────────────────────────────────┘
+```
+
+The header refreshes automatically every 5 seconds.
+Use ↑/↓ arrow keys to navigate command history.
+
+### Commands
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `help` | List all available commands | `help` |
+| `status` | Full system status snapshot | `status` |
+| `peers` | List all discovered peers with IDs | `peers` |
+| `network` | Show Reticulum identity, destination hash, announce settings | `network` |
+| `device` | Show local device info (hostname, platform, identity) | `device` |
+| `sync` | Show sync engine state, file counts, sync directory | `sync` |
+| `container` | Show container running state | `container` |
+| `start <service>` | Start a service *(stub — not yet implemented)* | `start sync` |
+| `stop <service>` | Stop a service *(stub — not yet implemented)* | `stop sync` |
+| `restart <service>` | Restart a service *(stub — not yet implemented)* | `restart peers` |
+| `clear` | Clear the output pane | `clear` |
+| `exit` | Close the CLI, keep app running in background | `exit` |
+| `quit` | Close the CLI *(background service keeps running — same as exit for now)* | `quit` |
+
+---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         THE APP                                   │
-│                                                                  │
-│   ┌───────────────────────────────────────────────────────────┐ │
-│   │  RETICULUM NETWORK LAYER (Background)                    │ │
-│   │  • Embedded RNS library (no rnsd daemon needed)           │ │
-│   │  • Auto-starts rnsd if not running                      │ │
-│   │  • Identity-based peer discovery                         │ │
-│   │  • Encrypted P2P links                                  │ │
-│   └───────────────────────────────────────────────────────────┘ │
-│                              │                                   │
-│                              ▼                                   │
-│   ┌───────────────────────────────────────────────────────────┐ │
-│   │  PEER DISCOVERY SERVICE (Background)                     │ │
-│   │  • Uses rnstatus to query Reticulum paths               │ │
-│   │  • Discovers peers on local network                      │ │
-│   │  • Auto-discovers devices with same user identity        │ │
-│   └───────────────────────────────────────────────────────────┘ │
-│                              │                                   │
-│                              ▼                                   │
-│   ┌───────────────────────────────────────────────────────────┐ │
-│   │  SYNC ENGINE (Background)                                 │ │
-│   │  • Syncs files with discovered peers                     │ │
-│   │  • Handles conflicts                                     │ │
-│   │  • Delta sync for efficiency                             │ │
-│   └───────────────────────────────────────────────────────────┘ │
-│                              │                                   │
-│                              ▼                                   │
-│   ┌───────────────────────────────────────────────────────────┐ │
-│   │  CONTAINER WITH YOUR LINUX OS (Background)                │ │
-│   │  • Alpine/Debian environment                             │ │
-│   │  • Your files, configs, terminal                         │ │
-│   │  • All your tools (git, python, vim, etc.)              │ │
-│   └───────────────────────────────────────────────────────────┘ │
-│                              │                                   │
-│                              ▼                                   │
-│   ┌───────────────────────────────────────────────────────────┐ │
-│   │  APP LAUNCHER / DISPLAY                                  │ │
-│   │  • Tkinter UI                                            │ │
-│   │  • Shows peer status, sync status, container status      │ │
-│   └───────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                     Personal Cloud OS                       │
+│                                                             │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │             ReticulumPeerService                     │  │
+│  │                                                      │  │
+│  │  • Initialises RNS stack (no external rnsd needed)   │  │
+│  │  • Loads / creates persistent device identity        │  │
+│  │  • Registers announce handler                        │  │
+│  │  • Background thread: announces presence every 30s   │  │
+│  │  • Receives announces → stores peers in _peers dict  │  │
+│  │  • Publishes peer.discovered / peer.updated events   │  │
+│  │  • create_link(peer_id) → RNS.Link (WIP)             │  │
+│  └──────────────────────────┬───────────────────────────┘  │
+│                             │ events                        │
+│           ┌─────────────────┼──────────────────┐           │
+│           ▼                 ▼                  ▼           │
+│  ┌──────────────┐  ┌─────────────────┐  ┌──────────────┐  │
+│  │ PeerLinkSvc  │  │   SyncEngine    │  │  EventBus    │  │
+│  │              │  │                 │  │              │  │
+│  │ Manages RNS  │  │ Scans ~/Sync    │  │ pub/sub for  │  │
+│  │ Link objects │  │ File manifest   │  │ all services │  │
+│  │ (WIP)        │  │ JSON protocol   │  │              │  │
+│  └──────────────┘  │ (partial)       │  └──────────────┘  │
+│                    └─────────────────┘                     │
+│                                                             │
+│  ┌──────────────┐  ┌─────────────────┐  ┌──────────────┐  │
+│  │ DeviceManager│  │ContainerManager │  │  CLIInterface│  │
+│  │              │  │                 │  │              │  │
+│  │ Fingerprints │  │ Docker (P0:     │  │ Curses UI    │  │
+│  │ device by    │  │ replace with    │  │ live header  │  │
+│  │ hostname+MAC │  │ self-contained) │  │ + scroll pane│  │
+│  │ inventory    │  │                 │  │ + prompt     │  │
+│  └──────────────┘  └─────────────────┘  └──────────────┘  │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## Features
+### Key design decisions
 
-### 🔐 ZeroTrust Networking
-- Uses **Reticulum** for encrypted peer-to-peer communication
-- No central server - fully decentralized
-- Identity-based authentication (same identity = trusted peer)
+**Single networking layer** — Reticulum handles everything: identity, discovery,
+encryption, transport. There is no separate discovery service (it was removed —
+see `src/shelf/discovery.py` for the archived code and explanation).
 
-### 👥 Peer Discovery
-- Automatic discovery of devices on local network
-- Uses Reticulum's AutoInterface for local discovery
-- Polls `rnstatus` for real-time peer information
+**ZeroTrust by default** — every device has a cryptographic identity
+(`~/.reticulum/storage/identities/pcos_<mac>`). Peers are identified by their
+identity hash, not by IP address. Communication is encrypted at the Reticulum
+layer without any additional configuration.
 
-### 📁 File Sync
-- Bidirectional file synchronization
-- Conflict detection and resolution
-- Encrypted transfers via Reticulum links
+**Offline-first** — the app starts and runs fully without internet. LAN peers
+are discovered via Reticulum's AutoInterface (UDP multicast). Internet-routable
+discovery (via Reticulum TCP interfaces or Tailscale) is a future addition.
 
-### 🐧 Linux Container
-- Runs Alpine Linux in a Docker container
-- Your personal environment available anywhere
-- Terminal access via UI
-
-### 🖥️ Desktop UI
-- Tkinter-based launcher
-- Shows peer status, sync status, container status
-- Open apps: Terminal, Files, Calendar, Editor, Settings
-
-## Installation
-
-```bash
-# Clone the repo
-git clone https://github.com/jonatse/personal-cloud-os.git
-cd personal-cloud-os
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Install Reticulum (if not already installed)
-pip install rns
-```
-
-## Running
-
-```bash
-cd src
-python3 main.py
-```
-
-This will:
-1. Start Reticulum networking (auto-starts rnsd if needed)
-2. Initialize peer discovery
-3. Start sync engine
-4. Launch the Tkinter UI
-
-## Configuration
-
-Edit `src/core/config.py` or create `config.yaml`:
-
-```yaml
-app:
-  name: "MyCloudOS"
-  debug: false
-
-reticulum:
-  announce_interval: 30
-  identity_path: "~/.reticulum/storage/identities/pcos_device"
-
-sync:
-  sync_interval: 60
-  conflict_resolution: "newest"
-  sync_dir: "~/Sync"
-
-container:
-  auto_start: true
-  image: "alpine:latest"
-  name: "personal-cloud-os"
-```
-
-## Peer Discovery
-
-### How it works
-
-1. Each device generates a unique **device identity** (`pcos_device`)
-2. Reticulum's AutoInterface discovers peers on the local network
-3. The discovery service polls `rnstatus` every 5 seconds
-4. Found peers are stored with their Reticulum hash
-
-### Testing Discovery
-
-```python
-# Quick test
-cd src
-python3 -c "
-import asyncio
-import sys
-sys.path.insert(0, '.')
-from core.config import Config
-from core.events import event_bus
-from services.reticulum_peer import ReticulumPeerService
-from services.discovery import PeerDiscoveryService
-
-async def test():
-    config = Config()
-    reticulum = ReticulumPeerService(config, event_bus)
-    await reticulum.start()
-    
-    discovery = PeerDiscoveryService(config, event_bus)
-    discovery.set_reticulum_service(reticulum)
-    await discovery.start()
-    
-    for i in range(20):
-        await asyncio.sleep(3)
-        peers = discovery.get_peers()
-        print(f'Found {len(peers)} peers')
-        for p in peers:
-            print(f'  - {p.name}: {p.reticulum_hash[:20]}...')
-    
-    await discovery.stop()
-    await reticulum.stop()
-
-asyncio.run(test())
-"
-```
+---
 
 ## File Structure
 
 ```
-personal-cloud-os/
-├── SPEC.md                 # Architecture specification
-├── requirements.txt       # Python dependencies
-├── README.md              # This file
+project/
+├── README.md               ← this file
+├── SPEC.md                 ← design specification
+├── GOALS.md                ← priority tracking / known issues
+├── requirements.txt
+├── start.sh                ← convenience launcher
+├── cli.sh                  ← opens CLI in new terminal
 └── src/
-    ├── main.py            # Entry point
+    ├── main.py             ← entry point, service orchestrator
     ├── core/
-    │   ├── config.py      # Configuration management
-    │   ├── events.py      # Event system
-    │   └── logger.py      # Logging setup
+    │   ├── config.py       ← config load/save (~/.config/pcos/config.json)
+    │   ├── events.py       ← in-process pub/sub event bus
+    │   ├── logger.py       ← logging setup
+    │   ├── version.py      ← version string
+    │   └── device_manager.py ← device fingerprinting + inventory
     ├── services/
-    │   ├── reticulum_peer.py   # Reticulum networking
-    │   ├── discovery.py        # Peer discovery
-    │   ├── peer_link.py       # P2P links
-    │   └── sync.py            # File sync engine
+    │   ├── reticulum_peer.py  ← ★ core: ZeroTrust networking + peer discovery
+    │   ├── peer_link.py       ← encrypted P2P link manager (WIP)
+    │   └── sync.py            ← file sync engine (partial)
     ├── container/
-    │   └── manager.py         # Docker container management
-    └── ui/
-        ├── launcher.py        # Tkinter UI
-        └── components.py      # UI components
+    │   └── manager.py      ← container runtime (currently requires Docker)
+    ├── cli/
+    │   ├── interface.py    ← curses split-screen CLI
+    │   └── commands.py     ← command implementations
+    ├── tray/
+    │   └── system_tray.py  ← optional system tray icon
+    ├── ui/
+    │   ├── launcher.py     ← Tkinter GUI launcher (not wired to main.py yet)
+    │   └── components.py   ← reusable Tk widgets (not yet used by launcher)
+    └── shelf/
+        ├── __init__.py     ← shelf index
+        └── discovery.py    ← archived: old two-layer discovery service
 ```
 
-## Dependencies
+---
 
-- **Python 3.10+**
-- **rns** - Reticulum networking stack
-- **aiohttp** - Async HTTP (future use)
-- **PyYAML** - Configuration
-- **colorlog** - Colored logging
+## Device Identity
 
-## Network Interfaces
+Each device gets a stable cryptographic identity on first run, stored at:
 
-The app supports multiple network interfaces:
-
-1. **AutoInterface** (default) - Local network discovery via UDP
-2. **TCP Interface** - For wider networks (configure in `~/.reticulum/config`)
-3. **Serial/LoRa** - For radio-based networks (future)
-
-## Troubleshooting
-
-### No peers discovered
-1. Ensure both devices are on the same network
-2. Check that rnsd is running: `rnstatus`
-3. Check path table: `rnpath -t`
-
-### Start rnsd manually
-```bash
-~/.local/bin/rnsd -s
+```
+~/.reticulum/storage/identities/pcos_<last6ofMAC>
 ```
 
-### Check network interfaces
-```bash
-rnstatus -v
+The identity is derived from **hostname + MAC address** → SHA-256 → `device_id`.
+This means:
+- The same device always gets the same identity
+- If you re-install the OS, a new identity is created (new MAC possible)
+- Identities are **not** shared between devices — each is unique
+
+The **device inventory** lives at `src/core/device_inventory.json` and tracks
+hardware, network, and SSH info for each known device.
+
+> ⚠️ **Do not commit plaintext credentials to the inventory file.**
+> The `.gitignore` excludes `device_inventory.json` for this reason.
+
+---
+
+## Configuration
+
+Config file: `~/.config/pcos/config.json` (created automatically on first run)
+
+```json
+{
+  "app": {
+    "debug": false,
+    "log_level": "INFO"
+  },
+  "reticulum": {
+    "identity_path": "~/.reticulum/storage/identities/pcos",
+    "announce_interval": 30
+  },
+  "sync": {
+    "sync_dir": "~/Sync",
+    "sync_interval": 60,
+    "conflict_resolution": "newest"
+  },
+  "container": {
+    "auto_start": true,
+    "image": "alpine:latest",
+    "name": "pcos-container"
+  }
+}
 ```
 
-## Future Enhancements
+---
 
-- [ ] File transfer via Reticulum links
-- [ ] TCP interface for cross-network communication
-- [ ] Audio-based peer discovery
-- [ ] RF-based peer discovery
-- [ ] End-to-end encryption for all traffic
-- [ ] Mobile support (iOS/Android)
+## Known Issues / Bugs
 
-## License
+See `GOALS.md` for the full priority list. Critical issues:
 
-MIT License - See LICENSE file
+1. **`ReticulumPeerService.stop()` never stops** — inverted guard (`if self._running: return` should be `if not self._running: return`)
+2. **`create_link()` will fail at runtime** — `ReticulumPeer.destination` stores an `RNS.Identity`, but `RNS.Link()` requires an `RNS.Destination`
+3. **Container requires Docker** — P0 priority to replace with a self-contained runtime
+4. **`cmd_start/stop/restart` are stubs** — they print a message but do nothing
+5. **`cmd_quit` does not stop the background service** — it only closes the CLI
+
+---
+
+## Shelved Code
+
+`src/shelf/` contains code that was removed from active use but kept for reference:
+
+| File | What it was | Why removed |
+|------|------------|-------------|
+| `discovery.py` | Two-layer discovery service wrapping Reticulum | Race condition between layers caused peer count to always show 0; merged into ReticulumPeerService directly |
+
