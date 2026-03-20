@@ -1,13 +1,26 @@
 """Personal Cloud OS - Main Entry Point."""
+# ── Vendor path bootstrap ──────────────────────────────────────────────────
+# Must happen before ANY other imports so vendored packages take priority
+# over anything installed system-wide. This is what makes the app
+# self-contained — no pip install required on the target machine.
+import sys
+import os
+
+_SRC_DIR    = os.path.dirname(os.path.abspath(__file__))
+_VENDOR_DIR = os.path.join(_SRC_DIR, 'vendor')
+
+if os.path.isdir(_VENDOR_DIR) and _VENDOR_DIR not in sys.path:
+    sys.path.insert(0, _VENDOR_DIR)
+
+# Keep src/ itself on the path so our own modules resolve correctly
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
+# ── End vendor bootstrap ───────────────────────────────────────────────────
+
 import asyncio
 import logging
 import signal
-import sys
-import os
 import argparse
-
-# Add src to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core.config import Config
 from core.events import Event, Events, event_bus

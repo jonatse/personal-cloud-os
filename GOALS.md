@@ -176,7 +176,7 @@ technical rationale and dependency audit.
       - cryptography from `/usr/lib/python3/dist-packages/cryptography`
       - psutil from `/usr/lib/python3/dist-packages/psutil`
 
-- [ ] **S5** Update `src/main.py` to use vendor/ first
+- [x] **S5** Update `src/main.py` to use vendor/ first
       Add at the very top of main.py (before any other imports):
       ```python
       import sys, os
