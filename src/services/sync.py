@@ -100,6 +100,7 @@ class SyncEngine:
         
         self._running = False
         self._sync_task: Optional[asyncio.Task] = None
+        self._event_loop = None
         self._status = SyncStatus()
         self._lock = threading.Lock()
         
@@ -156,6 +157,7 @@ class SyncEngine:
         self._running = True
         
         # Scan local files
+        self._event_loop = asyncio.get_event_loop()
         await self._scan_local_files()
         
         # Start periodic sync
@@ -179,15 +181,19 @@ class SyncEngine:
     
     async def _sync_loop(self):
         """Periodic sync loop."""
+        # Perform a first sync shortly after startup rather than waiting the full interval
+        await asyncio.sleep(5)
         while self._running:
             try:
-                await asyncio.sleep(self._sync_interval)
+                await self._scan_local_files()
                 await self.sync_all()
+                await asyncio.sleep(self._sync_interval)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Sync loop error: {e}")
                 self._status.errors.append(str(e))
+                await asyncio.sleep(self._sync_interval)
     
     async def _scan_local_files(self):
         """Scan local sync directory."""
@@ -311,15 +317,18 @@ class SyncEngine:
                 }
                 logger.info(f"Received file list from {peer_id}: {len(self._remote_files[peer_id])} files")
                 # Start sync
-                asyncio.create_task(self._perform_sync(peer_id))
+                if self._event_loop:
+                    asyncio.run_coroutine_threadsafe(self._perform_sync(peer_id), self._event_loop)
                 
             elif msg_type == SYNC_MSG_REQUEST_FILE:
                 # Peer wants a file
-                asyncio.create_task(self._send_file(peer_id, message.get("path")))
+                if self._event_loop:
+                    asyncio.run_coroutine_threadsafe(self._send_file(peer_id, message.get("path")), self._event_loop)
                 
             elif msg_type == SYNC_MSG_FILE_DATA:
                 # Received file data
-                asyncio.create_task(self._receive_file_data(peer_id, message))
+                if self._event_loop:
+                    asyncio.run_coroutine_threadsafe(self._receive_file_data(peer_id, message), self._event_loop)
                 
             elif msg_type == SYNC_MSG_FILE_COMPLETE:
                 # File transfer complete
@@ -477,6 +486,8 @@ class SyncEngine:
     
     def get_status(self) -> SyncStatus:
         """Get current sync status."""
+        # Always reflect the live local file count so the CLI shows real numbers
+        self._status.files_total = len(self._local_files)
         return self._status
     
     def is_running(self) -> bool:
