@@ -1,24 +1,32 @@
 """
-Sync Engine - Transport-aware file synchronisation for Personal Cloud OS.
+Sync Engine v2 - RNS.Resource-based file synchronisation
 
-Transport selection (via TransportManager):
-  FAST   link → WireGuard tunnel (rsync/SCP over tunnel IP at full NIC speed)
-  MEDIUM link → SwarmManager (torrent-style multi-peer chunk exchange)
-  SLOW   link → RNS.Resource  (RNS built-in bulk transfer, auto-chunking)
-  OFFLINE     → queue for later
+Protocol (all control messages are JSON over RNS.Packet via PeerLinkService):
 
-Control protocol (JSON over RNS.Packet via PeerLinkService):
-  Type 1  REQUEST_FILELIST  {type:1, ts:<iso>}
-  Type 2  FILELIST          {type:2, files:{<path>: {path,size,mtime,hash}}}
-  Type 3  REQUEST_FILE      {type:3, path:<str>, transport:<tier>}
-  Type 5  FILE_COMPLETE     {type:5, path:<str>}
-  Type 6  DELETE_FILE       {type:6, path:<str>}
+  On link established → both sides immediately send INDEX_OFFER
+  INDEX_OFFER  {type:10, device_id, index_id, files: {path: FileRecord}}
+  NEED_LIST    {type:11, files: [path, ...]}          ← "please send these"
+  FILE_DONE    {type:12, path, hash}                  ← "I wrote this file ok"
 
-File data transport:
-  SLOW  → RNS.Resource advertised on the link; receiver accepts via
-           link.set_resource_callback / link.set_resource_strategy
-  FAST  → TransportManager handles (WireGuard rsync out-of-band)
-  MEDIUM→ SwarmManager handles (HAVE/REQUEST/CHUNK/DONE JSON messages)
+File data: one RNS.Resource per file, metadata = JSON {path, hash, version}
+  - RNS.Resource handles chunking, windowing, retransmission internally
+  - Resource transfers keep the link alive naturally (traffic resets stale timer)
+  - Receiver writes to ~/Sync/<path> on completion, then sends FILE_DONE
+
+Vector clocks (conflict detection):
+  Each FileRecord carries version = {device_id: int, ...}
+  If neither clock dominates → conflict → keep both with .conflict-<devid> suffix
+
+Index ID:
+  A per-device random 64-bit hex string. Changes only if the index is wiped.
+  Persisted to ~/.local/share/pcos/index_id. On reconnect, if the remote's
+  index_id matches what we last saw AND they send a max_sequence, we could
+  do delta sync. For v2 we always send the full index (simple, correct).
+
+Link lifecycle:
+  Links stay open for as long as transfers are in flight. RNS.Resource keeps
+  the link alive. After all transfers complete, the link may close naturally
+  (STALE_TIME=720s) or be re-used on the next sync cycle.
 """
 import asyncio
 import hashlib
@@ -26,112 +34,169 @@ import json
 import logging
 import os
 import threading
+import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import RNS
 
 logger = logging.getLogger(__name__)
 
-# ── Control message type constants ───────────────────────────────────────────
-MSG_REQUEST_FILELIST = 1
-MSG_FILELIST         = 2
-MSG_REQUEST_FILE     = 3
-MSG_FILE_COMPLETE    = 5
-MSG_DELETE_FILE      = 6
-
-# ── Swarm message prefix (handled by SwarmManager, not SyncEngine) ───────────
-_SWARM_TYPES = {"have", "request", "chunk", "done"}
+# ── Wire protocol constants ────────────────────────────────────────────────────
+MSG_INDEX_OFFER = 10   # {type, device_id, index_id, files: {path: FileRecord}}
+MSG_NEED_LIST   = 11   # {type, files: [path, ...]}
+MSG_FILE_DONE   = 12   # {type, path, hash}
 
 
-class SyncState(Enum):
-    IDLE     = "idle"
-    SYNCING  = "syncing"
-    ERROR    = "error"
-
+# ── Data structures ────────────────────────────────────────────────────────────
 
 @dataclass
-class FileInfo:
-    path:  str
-    size:  int
-    mtime: float
-    hash:  str = ""
+class FileRecord:
+    """Represents one file in the sync index."""
+    path:    str
+    size:    int
+    mtime:   float
+    hash:    str                          # SHA-256 hex
+    version: Dict[str, int] = field(default_factory=dict)  # {device_id: counter}
 
     def to_dict(self) -> dict:
-        return {"path": self.path, "size": self.size,
-                "mtime": self.mtime, "hash": self.hash}
+        return {
+            "path":    self.path,
+            "size":    self.size,
+            "mtime":   self.mtime,
+            "hash":    self.hash,
+            "version": self.version,
+        }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "FileInfo":
-        return cls(**d)
+    def from_dict(cls, d: dict) -> "FileRecord":
+        return cls(
+            path    = d["path"],
+            size    = d["size"],
+            mtime   = d["mtime"],
+            hash    = d.get("hash", ""),
+            version = d.get("version", {}),
+        )
+
+    def dominates(self, other: "FileRecord") -> bool:
+        """Return True if self's vector clock >= other's on all devices."""
+        all_keys = set(self.version) | set(other.version)
+        return all(self.version.get(k, 0) >= other.version.get(k, 0) for k in all_keys)
+
+    def conflicts_with(self, other: "FileRecord") -> bool:
+        """Return True if neither clock dominates the other."""
+        return not self.dominates(other) and not other.dominates(self)
 
 
 @dataclass
 class SyncStatus:
-    state:        str = "idle"
-    files_synced: int = 0
-    files_total:  int = 0
-    last_sync:    Optional[datetime] = None
-    errors:       List[str] = field(default_factory=list)
+    state:         str = "idle"
+    files_local:   int = 0
+    files_synced:  int = 0
+    active_transfers: int = 0
+    last_sync:     Optional[datetime] = None
+    errors:        List[str] = field(default_factory=list)
 
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _sha256(path: str) -> str:
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            while chunk := f.read(65536):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+
+def _load_index_id(store_dir: str) -> str:
+    """Load or create a persistent random index ID for this device."""
+    path = os.path.join(store_dir, "index_id")
+    try:
+        if os.path.exists(path):
+            with open(path) as f:
+                return f.read().strip()
+    except Exception:
+        pass
+    index_id = uuid.uuid4().hex
+    os.makedirs(store_dir, exist_ok=True)
+    with open(path, "w") as f:
+        f.write(index_id)
+    return index_id
+
+
+# ── Main engine ────────────────────────────────────────────────────────────────
 
 class SyncEngine:
     """
-    Synchronises ~/Sync with all discovered peers.
-    Delegates bulk data transfer to TransportManager.
+    Synchronises ~/Sync with all discovered peers using RNS.Resource.
+
+    On every link establishment, both sides immediately exchange their full
+    index (INDEX_OFFER). Each side computes what it needs (NEED_LIST) and
+    begins sending files via RNS.Resource — one Resource per file. The remote
+    accepts, writes to disk, and sends FILE_DONE. No polling required.
     """
 
     def __init__(self, config, event_bus, reticulum_service,
                  peer_link_service=None, transport_manager=None):
-        self.config              = config
-        self.event_bus           = event_bus
-        self.reticulum_service   = reticulum_service
-        self.peer_link_service   = peer_link_service
-        self.transport_manager   = transport_manager   # set after construction
+        self.config            = config
+        self.event_bus         = event_bus
+        self.reticulum_service = reticulum_service
+        self.peer_link_service = peer_link_service
+        self.transport_manager = transport_manager
 
-        self._running       = False
-        self._sync_task:    Optional[asyncio.Task] = None
-        self._event_loop:   Optional[asyncio.AbstractEventLoop] = None
-        self._status        = SyncStatus()
-        self._lock          = threading.Lock()
+        self._running     = False
+        self._sync_task:  Optional[asyncio.Task] = None
+        self._event_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._status      = SyncStatus()
+        self._lock        = threading.Lock()
 
-        self._local_files:    Dict[str, FileInfo] = {}
-        self._remote_files:   Dict[str, Dict[str, FileInfo]] = {}  # peer_id → files
-        self._receiving_files: Dict[str, int] = {}   # path → chunk count
+        # Local file index: path → FileRecord
+        self._local_files: Dict[str, FileRecord] = {}
+
+        # Remote indexes: peer_id → {path → FileRecord}
+        self._remote_files: Dict[str, Dict[str, FileRecord]] = {}
+
+        # In-flight outbound Resources: peer_id → {path → RNS.Resource}
+        self._outbound: Dict[str, Dict[str, object]] = {}
+
+        # Device identity
+        self._device_id = config.get("device.id", "unknown")
+        store_dir       = os.path.expanduser("~/.local/share/pcos")
+        self._index_id  = _load_index_id(store_dir)
 
         self._sync_dir      = os.path.expanduser("~/Sync")
         self._sync_interval = config.get("sync.sync_interval", 60)
-
         os.makedirs(self._sync_dir, exist_ok=True)
 
+        # Subscribe to events
         self.event_bus.subscribe("peer.discovered", self._on_peer_discovered)
         self.event_bus.subscribe("peer.lost",       self._on_peer_lost)
 
-        logger.info("SyncEngine initialised")
+        logger.info("SyncEngine v2 initialised (RNS.Resource transport)")
 
     def set_transport_manager(self, tm):
-        """Wire in the TransportManager (called from main.py after construction)."""
         self.transport_manager = tm
 
-    # ------------------------------------------------------------------ #
-    # Lifecycle                                                            #
-    # ------------------------------------------------------------------ #
+    # ── Lifecycle ──────────────────────────────────────────────────────
 
     async def start(self):
         if self._running:
             return
         logger.info("Starting sync engine…")
-        self._running     = True
-        self._event_loop  = asyncio.get_event_loop()
+        self._running    = True
+        self._event_loop = asyncio.get_event_loop()
 
-        # Ensure data callback is registered even if peer.discovered fires late
+        # Re-register data callback whenever a link comes up
         if self.peer_link_service:
             self.peer_link_service.register_link_callback(self._on_link_state_changed)
 
         await self._scan_local_files()
-        self._sync_task = asyncio.create_task(self._sync_loop())
+        self._sync_task = asyncio.create_task(self._periodic_scan_loop())
         logger.info("Sync engine started")
 
     async def stop(self):
@@ -145,18 +210,28 @@ class SyncEngine:
                 pass
         logger.info("Sync engine stopped")
 
-    # ------------------------------------------------------------------ #
-    # Event handlers                                                       #
-    # ------------------------------------------------------------------ #
+    def is_running(self) -> bool:
+        return self._running
+
+    def get_status(self) -> SyncStatus:
+        self._status.files_local = len(self._local_files)
+        with self._lock:
+            self._status.active_transfers = sum(
+                len(v) for v in self._outbound.values())
+        return self._status
+
+    @property
+    def sync_dir(self) -> str:
+        return self._sync_dir
+
+    # ── Event handlers ─────────────────────────────────────────────────
 
     async def _on_peer_discovered(self, event):
         peer_id = event.data.get("id")
         if not peer_id or not self.peer_link_service:
             return
-        # Register inbound data callback for this peer
         self.peer_link_service.register_data_callback(
             peer_id, self._handle_peer_data)
-        # Initiate a link
         self.peer_link_service.connect_to_peer(peer_id)
 
     async def _on_peer_lost(self, event):
@@ -165,402 +240,377 @@ class SyncEngine:
             self._remote_files.pop(peer_id, None)
 
     def _on_link_state_changed(self, peer_id: str, state):
-        """
-        Called when any link changes state (from PeerLinkService).
-        Re-registers the data callback on CONNECTED so we never miss
-        data even if peer.discovered fired after the link was already up.
-        """
+        """Called by PeerLinkService when a link becomes CONNECTED."""
         from services.peer_link import LinkState
         if state == LinkState.CONNECTED:
-            logger.debug(f"Link connected to {peer_id[:12]}, ensuring data callback registered")
+            logger.debug(f"Link up to {peer_id[:12]} — registering callbacks and sending index")
             self.peer_link_service.register_data_callback(
                 peer_id, self._handle_peer_data)
+            # Set up RNS.Resource receiver on this link
+            self._setup_resource_receiver(peer_id)
+            # Send our index immediately
+            if self._event_loop:
+                asyncio.run_coroutine_threadsafe(
+                    self._send_index_offer(peer_id), self._event_loop)
+        elif state == LinkState.DISCONNECTED:
+            # Clean up in-flight transfers for this peer
+            with self._lock:
+                self._outbound.pop(peer_id, None)
 
-    # ------------------------------------------------------------------ #
-    # Sync loop                                                            #
-    # ------------------------------------------------------------------ #
+    # ── Periodic scan ──────────────────────────────────────────────────
 
-    async def _sync_loop(self):
-        # Short initial delay so links can be established before first sync
-        await asyncio.sleep(8)
+    async def _periodic_scan_loop(self):
+        """Rescan local files periodically and re-offer index to all peers."""
+        await asyncio.sleep(10)
         while self._running:
             try:
+                prev_hashes = {p: r.hash for p, r in self._local_files.items()}
                 await self._scan_local_files()
-                await self._sync_all()
+
+                # If any file changed, re-offer index to all connected peers
+                new_hashes = {p: r.hash for p, r in self._local_files.items()}
+                if new_hashes != prev_hashes:
+                    logger.info("Local files changed — re-offering index to peers")
+                    peers = self.peer_link_service.get_connected_peers() \
+                        if self.peer_link_service else []
+                    for peer_id in peers:
+                        await self._send_index_offer(peer_id)
+
                 await asyncio.sleep(self._sync_interval)
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                logger.error(f"Sync loop error: {exc}", exc_info=True)
-                self._status.errors.append(str(exc))
+                logger.error(f"Scan loop error: {exc}", exc_info=True)
                 await asyncio.sleep(self._sync_interval)
 
-    async def _sync_all(self):
-        if not self.reticulum_service.is_running():
-            return
+    # ── Index exchange ─────────────────────────────────────────────────
+
+    async def _send_index_offer(self, peer_id: str):
+        """Send our full index to a peer."""
         if not self.peer_link_service:
             return
-
-        peers = self.reticulum_service.get_peers()
-        if not peers:
-            logger.debug("No peers — skipping sync")
+        if not self.peer_link_service.is_connected_to(peer_id):
             return
 
-        logger.info(f"Syncing with {len(peers)} peer(s)…")
-        self._status.state = SyncState.SYNCING.value
-
-        for peer in peers:
-            await self._sync_with_peer(peer)
-
-        self._status.state      = SyncState.IDLE.value
-        self._status.last_sync  = datetime.now()
-
-    async def _sync_with_peer(self, peer):
-        """Ensure we're connected and send a file-list request."""
-        if not self.peer_link_service.is_connected_to(peer.id):
-            logger.debug(f"Connecting to {peer.name}…")
-            if not self.peer_link_service.connect_to_peer(peer.id):
-                logger.warning(f"Could not connect to {peer.name}")
-                return
-            # Poll for ACTIVE (up to 10 s)
-            for _ in range(20):
-                await asyncio.sleep(0.5)
-                if self.peer_link_service.is_connected_to(peer.id):
-                    break
-            else:
-                logger.warning(f"Link to {peer.name} did not become ACTIVE in time")
-                return
-
-        sent = self.peer_link_service.send_json_to_peer(peer.id, {
-            "type": MSG_REQUEST_FILELIST,
-            "ts":   datetime.now().isoformat(),
-        })
+        files_dict = {p: r.to_dict() for p, r in self._local_files.items()}
+        msg = {
+            "type":      MSG_INDEX_OFFER,
+            "device_id": self._device_id,
+            "index_id":  self._index_id,
+            "files":     files_dict,
+        }
+        sent = self.peer_link_service.send_json_to_peer(peer_id, msg)
         if sent:
-            logger.info(f"Sent file list request to {peer.name}")
+            logger.info(f"Sent index offer to {peer_id[:12]} ({len(files_dict)} files)")
         else:
-            logger.warning(f"Failed to send file list request to {peer.name}")
+            logger.warning(f"Failed to send index offer to {peer_id[:12]}")
 
-    # ------------------------------------------------------------------ #
-    # Inbound data dispatcher (called from RNS thread via PeerLinkService) #
-    # ------------------------------------------------------------------ #
+    def _on_index_offer(self, peer_id: str, msg: dict):
+        """Process an incoming index offer and request what we need."""
+        files_data  = msg.get("files", {})
+        remote_files = {p: FileRecord.from_dict(d) for p, d in files_data.items()}
+        self._remote_files[peer_id] = remote_files
+        logger.info(
+            f"Received index from {peer_id[:12]}: {len(remote_files)} file(s)")
 
-    def _handle_peer_data(self, peer_id: str, data: bytes):
-        """
-        Entry point for all inbound peer data.
-        Runs in an RNS background thread — must not await directly.
-        Schedules async work via run_coroutine_threadsafe.
-        """
-        try:
-            msg = json.loads(data.decode("utf-8"))
-        except Exception as exc:
-            logger.error(f"Bad JSON from {peer_id}: {exc}")
+        # Compute what we need
+        needed = self._compute_needed(remote_files)
+        if not needed:
+            logger.info(f"Already up to date with {peer_id[:12]}")
             return
-
-        # Swarm messages are delegated directly (SwarmManager is thread-safe)
-        if msg.get("t") in _SWARM_TYPES and self.transport_manager:
-            self.transport_manager.swarm.handle_message(peer_id, msg)
-            return
-
-        msg_type = msg.get("type")
-
-        if msg_type == MSG_REQUEST_FILELIST:
-            self._send_filelist(peer_id)
-
-        elif msg_type == MSG_FILELIST:
-            self._on_filelist_received(peer_id, msg)
-
-        elif msg_type == MSG_REQUEST_FILE:
-            if self._event_loop:
-                asyncio.run_coroutine_threadsafe(
-                    self._send_file(peer_id, msg.get("path", "")),
-                    self._event_loop)
-
-        elif msg_type == MSG_FILE_COMPLETE:
-            logger.info(f"File transfer complete: {msg.get('path')} from {peer_id[:12]}")
-            # Re-scan so the new file appears in status
-            if self._event_loop:
-                asyncio.run_coroutine_threadsafe(
-                    self._scan_local_files(), self._event_loop)
-
-        else:
-            logger.debug(f"Unknown message type {msg_type} from {peer_id[:12]}")
-
-    def _send_filelist(self, peer_id: str):
-        """Send our file list to a peer (called from RNS thread — sync-safe)."""
-        filelist = {p: fi.to_dict() for p, fi in self._local_files.items()}
-        self.peer_link_service.send_json_to_peer(peer_id, {
-            "type":  MSG_FILELIST,
-            "files": filelist,
-        })
-        logger.info(f"Sent file list to {peer_id[:12]} ({len(filelist)} files)")
-
-    def _on_filelist_received(self, peer_id: str, msg: dict):
-        """Process received file list and request missing/newer files."""
-        files_data = msg.get("files", {})
-        remote = {p: FileInfo.from_dict(d) for p, d in files_data.items()}
-        self._remote_files[peer_id] = remote
-        logger.info(f"Received file list from {peer_id[:12]}: {len(remote)} files")
-
-        if self._event_loop:
-            asyncio.run_coroutine_threadsafe(
-                self._request_needed_files(peer_id, remote),
-                self._event_loop)
-
-    # ------------------------------------------------------------------ #
-    # File transfer                                                        #
-    # ------------------------------------------------------------------ #
-
-    async def _request_needed_files(self, peer_id: str,
-                                    remote: Dict[str, FileInfo]):
-        """Compare remote file list with local and request what we need."""
-        needed = []
-        for path, remote_fi in remote.items():
-            local_fi = self._local_files.get(path)
-            if local_fi is None:
-                needed.append((path, remote_fi))
-            elif remote_fi.hash and local_fi.hash and remote_fi.hash != local_fi.hash:
-                if remote_fi.mtime > local_fi.mtime:
-                    needed.append((path, remote_fi))
-            elif remote_fi.mtime > (local_fi.mtime if local_fi else 0):
-                needed.append((path, remote_fi))
 
         logger.info(f"Need {len(needed)} file(s) from {peer_id[:12]}")
+        msg_out = {"type": MSG_NEED_LIST, "files": needed}
+        self.peer_link_service.send_json_to_peer(peer_id, msg_out)
 
-        # Determine transport tier for this peer
-        transport_tier = "rns"
-        if self.transport_manager:
-            from transport.detector import Transport
-            t = self.transport_manager.get_transport_for_peer(peer_id)
-            transport_tier = t.value
+    def _compute_needed(self, remote: Dict[str, FileRecord]) -> List[str]:
+        """
+        Return list of paths we should request from the remote.
+        Uses vector clocks where available, falls back to mtime.
+        """
+        needed = []
+        for path, remote_rec in remote.items():
+            local_rec = self._local_files.get(path)
 
-        for path, remote_fi in needed:
-            # Ask the remote to send this file
-            self.peer_link_service.send_json_to_peer(peer_id, {
-                "type":      MSG_REQUEST_FILE,
-                "path":      path,
-                "transport": transport_tier,
-            })
+            if local_rec is None:
+                # We don't have it at all
+                needed.append(path)
+                continue
 
-            # For swarm transport, register want() so we're ready when HAVE arrives
-            if transport_tier == "swarm" and self.transport_manager:
-                try:
-                    from transport.swarm import _total_chunks
-                    dest_path = os.path.join(self._sync_dir, path)
-                    total_chunks = _total_chunks(remote_fi.size)
-                    file_hash = remote_fi.hash or ""
+            if remote_rec.hash == local_rec.hash:
+                # Identical content — nothing to do
+                continue
 
-                    def _on_swarm_complete(dest_path=dest_path, rel_path=path):
-                        logger.info(f"Swarm: assembled {rel_path}")
-                        if self._event_loop:
-                            asyncio.run_coroutine_threadsafe(
-                                self._scan_local_files(), self._event_loop)
+            if remote_rec.version and local_rec.version:
+                # Use vector clock
+                if remote_rec.dominates(local_rec):
+                    needed.append(path)
+                elif remote_rec.conflicts_with(local_rec):
+                    # Both changed independently — we'll keep both
+                    logger.warning(
+                        f"Conflict detected for {path} — will keep both versions")
+                    needed.append(path)
+                # else: local dominates → remote is old, skip
+            else:
+                # No vector clocks: fall back to mtime
+                if remote_rec.mtime > local_rec.mtime:
+                    needed.append(path)
 
-                    self.transport_manager.swarm.want(
-                        file_hash=file_hash,
-                        dest_path=dest_path,
-                        total_chunks=total_chunks,
-                        on_complete=_on_swarm_complete,
-                    )
-                    logger.debug(f"Swarm: registered want for {path} ({total_chunks} chunks)")
-                except Exception as exc:
-                    logger.warning(f"Could not register swarm.want for {path}: {exc}")
+        return needed
 
-            await asyncio.sleep(0.05)
+    def _on_need_list(self, peer_id: str, msg: dict):
+        """Peer told us what it needs — send each file via RNS.Resource."""
+        paths = msg.get("files", [])
+        logger.info(f"Peer {peer_id[:12]} needs {len(paths)} file(s)")
+        for path in paths:
+            if self._event_loop:
+                asyncio.run_coroutine_threadsafe(
+                    self._send_file_resource(peer_id, path),
+                    self._event_loop)
 
-    async def _send_file(self, peer_id: str, filepath: str):
-        """Send a file to a peer using the appropriate transport."""
-        if not filepath:
-            return
+    # ── File sending via RNS.Resource ──────────────────────────────────
 
-        full_path = os.path.join(self._sync_dir, filepath)
+    async def _send_file_resource(self, peer_id: str, rel_path: str):
+        """Send a file to a peer via RNS.Resource."""
+        full_path = os.path.join(self._sync_dir, rel_path)
         if not os.path.exists(full_path):
-            logger.warning(f"Requested file not found: {filepath}")
+            logger.warning(f"Requested file not found: {rel_path}")
             return
+
+        link = self.peer_link_service._links.get(peer_id)
+        if not link or link.status != RNS.Link.ACTIVE:
+            logger.warning(f"No active link to {peer_id[:12]} for file send")
+            return
+
+        # Check if already sending this file to this peer
+        with self._lock:
+            if peer_id in self._outbound and rel_path in self._outbound[peer_id]:
+                logger.debug(f"Already sending {rel_path} to {peer_id[:12]}, skipping")
+                return
+            self._outbound.setdefault(peer_id, {})[rel_path] = None  # placeholder
 
         file_size = os.path.getsize(full_path)
+        file_hash = _sha256(full_path)
+        local_rec = self._local_files.get(rel_path)
+        version   = local_rec.version if local_rec else {}
 
-        # Determine transport
-        transport_tier = "rns"
-        if self.transport_manager:
-            from transport.detector import Transport, LinkTier
-            profile = self.peer_link_service.get_link_profile(peer_id)
-            if profile:
-                transport_tier = profile.transport.value
+        logger.info(
+            f"Sending {rel_path} ({file_size/1024:.1f} KB) → {peer_id[:12]} via RNS.Resource")
 
-                # Check bandwidth budget, warn if needed
-                ok, warn = self.transport_manager.governor.check_transfer(
-                    profile, file_size)
-                if not ok:
-                    logger.warning(f"Transfer blocked: {warn}")
-                    return
-                if warn:
-                    logger.warning(warn)
-
-                if profile.tier == LinkTier.FAST:
-                    # WireGuard handles the actual transfer
-                    self.transport_manager.send_file(peer_id, full_path)
-                    return
-
-                if profile.tier == LinkTier.MEDIUM:
-                    # Swarm handles it
-                    self.transport_manager.send_file(peer_id, full_path)
-                    return
-
-        # SLOW / fallback: use RNS.Resource
-        await self._send_file_rns_resource(peer_id, filepath, full_path)
-
-    async def _send_file_rns_resource(self, peer_id: str,
-                                      rel_path: str, full_path: str):
-        """
-        Send a file via RNS.Resource — the RNS built-in bulk transfer mechanism.
-        Handles its own chunking, windowing, and retransmission.
-        """
         try:
-            link = self.peer_link_service._links.get(peer_id)
-            if not link or link.status != RNS.Link.ACTIVE:
-                logger.warning(f"RNS.Resource: link to {peer_id[:12]} not ACTIVE")
-                return
-
-            file_size = os.path.getsize(full_path)
-            logger.info(f"RNS.Resource: sending {rel_path} "
-                        f"({file_size/1024:.1f} KB) to {peer_id[:12]}")
-
-            def _on_resource_concluded(resource):
-                if resource.status == RNS.Resource.COMPLETE:
-                    logger.info(f"RNS.Resource: {rel_path} delivered to {peer_id[:12]}")
-                    self.peer_link_service.send_json_to_peer(peer_id, {
-                        "type": MSG_FILE_COMPLETE,
-                        "path": rel_path,
-                    })
-                else:
-                    logger.error(f"RNS.Resource: {rel_path} failed "
-                                 f"(status={resource.status})")
-
             with open(full_path, "rb") as f:
                 data = f.read()
 
-            # Metadata so the receiver knows which path to write
-            metadata = json.dumps({"path": rel_path}).encode()
+            metadata = json.dumps({
+                "path":    rel_path,
+                "hash":    file_hash,
+                "version": version,
+            }).encode()
+
+            def _on_concluded(resource, pid=peer_id, path=rel_path):
+                with self._lock:
+                    self._outbound.get(pid, {}).pop(path, None)
+                if resource.status == RNS.Resource.COMPLETE:
+                    logger.info(f"Delivered {path} → {pid[:12]}")
+                else:
+                    logger.error(
+                        f"Resource failed for {path} → {pid[:12]} "
+                        f"(status={resource.status})")
 
             resource = RNS.Resource(
                 data=data,
                 link=link,
                 metadata=metadata,
-                callback=_on_resource_concluded,
+                callback=_on_concluded,
                 auto_compress=True,
             )
 
-            logger.info(f"RNS.Resource advertised: {rel_path} "
-                        f"({resource.get_transfer_size()/1024:.1f} KB on wire)")
+            with self._lock:
+                self._outbound.setdefault(peer_id, {})[rel_path] = resource
+
+            self._status.active_transfers += 1
+            logger.debug(
+                f"RNS.Resource advertised: {rel_path} "
+                f"({resource.get_transfer_size()/1024:.1f} KB on wire)")
 
         except Exception as exc:
-            logger.error(f"RNS.Resource send failed for {rel_path}: {exc}",
-                         exc_info=True)
+            with self._lock:
+                self._outbound.get(peer_id, {}).pop(rel_path, None)
+            logger.error(f"Resource send error {rel_path}: {exc}", exc_info=True)
 
-    # ------------------------------------------------------------------ #
-    # Inbound RNS.Resource handling (registered per-link)                 #
-    # ------------------------------------------------------------------ #
+    # ── Resource receiving ─────────────────────────────────────────────
 
-    def setup_resource_receiver(self, peer_id: str):
-        """
-        Register RNS.Resource callbacks on a newly ACTIVE link so we can
-        receive files sent via _send_file_rns_resource.
-        Called by main.py or PeerLinkService after link establishment.
-        """
-        link = self.peer_link_service._links.get(peer_id) if self.peer_link_service else None
+    def _setup_resource_receiver(self, peer_id: str):
+        """Register RNS.Resource callbacks on a newly active link."""
+        link = self.peer_link_service._links.get(peer_id) \
+            if self.peer_link_service else None
         if not link:
             return
-
         link.set_resource_strategy(RNS.Link.ACCEPT_APP)
         link.set_resource_callback(
-            lambda resource, pid=peer_id: self._on_resource_incoming(pid, resource))
+            lambda res, pid=peer_id: self._on_resource_incoming(pid, res))
         link.set_resource_concluded_callback(
-            lambda resource, pid=peer_id: self._on_resource_concluded(pid, resource))
+            lambda res, pid=peer_id: self._on_resource_concluded(pid, res))
+        logger.debug(f"Resource receiver set up for {peer_id[:12]}")
 
     def _on_resource_incoming(self, peer_id: str, resource) -> bool:
-        """Return True to accept the incoming resource."""
-        logger.info(f"RNS.Resource incoming from {peer_id[:12]}: "
-                    f"{resource.get_transfer_size()/1024:.1f} KB")
-        return True
+        size_kb = resource.get_transfer_size() / 1024
+        logger.info(
+            f"Incoming resource from {peer_id[:12]}: {size_kb:.1f} KB — accepting")
+        return True  # accept all
 
     def _on_resource_concluded(self, peer_id: str, resource):
-        """Write the received file to ~/Sync."""
+        """Called when an inbound RNS.Resource finishes."""
+        self._status.active_transfers = max(0, self._status.active_transfers - 1)
+
         if resource.status != RNS.Resource.COMPLETE:
-            logger.error(f"Incoming resource from {peer_id[:12]} failed "
-                         f"(status={resource.status})")
+            logger.error(
+                f"Inbound resource from {peer_id[:12]} failed "
+                f"(status={resource.status})")
             return
+
+        # Parse metadata
         try:
-            metadata = json.loads(resource.metadata.decode()) if resource.metadata else {}
-            rel_path = metadata.get("path", "received_file")
+            meta    = json.loads(resource.metadata.decode()) \
+                if resource.metadata else {}
+            rel_path = meta.get("path", "received_file")
+            expected_hash = meta.get("hash", "")
+            version  = meta.get("version", {})
         except Exception:
-            rel_path = "received_file"
+            rel_path      = "received_file"
+            expected_hash = ""
+            version       = {}
 
         full_path  = os.path.join(self._sync_dir, rel_path)
         parent_dir = os.path.dirname(full_path)
         if parent_dir:
             os.makedirs(parent_dir, exist_ok=True)
 
+        # Read resource data
         try:
-            data = resource.data.read() if hasattr(resource.data, "read") else resource.data
+            data = resource.data.read() \
+                if hasattr(resource.data, "read") else resource.data
+        except Exception as exc:
+            logger.error(f"Could not read resource data: {exc}")
+            return
+
+        # Verify hash
+        actual_hash = hashlib.sha256(data).hexdigest()
+        if expected_hash and actual_hash != expected_hash:
+            logger.error(
+                f"Hash mismatch for {rel_path}: "
+                f"expected {expected_hash[:16]} got {actual_hash[:16]}")
+            return
+
+        # Conflict check: if local copy exists and clocks conflict, rename
+        local_rec = self._local_files.get(rel_path)
+        if local_rec and local_rec.version and version:
+            incoming = FileRecord(
+                path=rel_path, size=len(data),
+                mtime=time.time(), hash=actual_hash, version=version)
+            if incoming.conflicts_with(local_rec):
+                # Rename existing to conflict copy
+                dev_id    = peer_id[:8]
+                base, ext = os.path.splitext(full_path)
+                conflict_path = f"{base}.conflict-{dev_id}{ext}"
+                try:
+                    os.rename(full_path, conflict_path)
+                    logger.warning(
+                        f"Conflict for {rel_path}: existing saved as "
+                        f"{os.path.basename(conflict_path)}")
+                except Exception:
+                    pass
+
+        # Write the file
+        try:
             with open(full_path, "wb") as f:
                 f.write(data)
-            logger.info(f"RNS.Resource: received and wrote {rel_path} "
-                        f"({len(data)/1024:.1f} KB)")
-            # Trigger a local rescan
-            if self._event_loop:
-                asyncio.run_coroutine_threadsafe(
-                    self._scan_local_files(), self._event_loop)
+            logger.info(
+                f"Received {rel_path} from {peer_id[:12]} "
+                f"({len(data)/1024:.1f} KB) ✓")
         except Exception as exc:
-            logger.error(f"Failed to write received resource {rel_path}: {exc}",
-                         exc_info=True)
+            logger.error(f"Write error for {rel_path}: {exc}")
+            return
 
-    # ------------------------------------------------------------------ #
-    # File scanning                                                        #
-    # ------------------------------------------------------------------ #
+        # Notify sender
+        self.peer_link_service.send_json_to_peer(peer_id, {
+            "type": MSG_FILE_DONE,
+            "path": rel_path,
+            "hash": actual_hash,
+        })
+
+        # Rescan so the new file shows up in the index
+        if self._event_loop:
+            asyncio.run_coroutine_threadsafe(
+                self._scan_local_files(), self._event_loop)
+
+    # ── Inbound control message dispatcher ────────────────────────────
+
+    def _handle_peer_data(self, peer_id: str, data: bytes):
+        """
+        Entry point for all inbound control messages.
+        Runs in an RNS background thread.
+        """
+        try:
+            msg = json.loads(data.decode("utf-8"))
+        except Exception as exc:
+            logger.error(f"Bad JSON from {peer_id[:12]}: {exc}")
+            return
+
+        msg_type = msg.get("type")
+
+        if msg_type == MSG_INDEX_OFFER:
+            self._on_index_offer(peer_id, msg)
+
+        elif msg_type == MSG_NEED_LIST:
+            self._on_need_list(peer_id, msg)
+
+        elif msg_type == MSG_FILE_DONE:
+            path = msg.get("path", "?")
+            logger.info(f"Peer {peer_id[:12]} confirmed receipt of {path}")
+            self._status.files_synced += 1
+            self._status.last_sync = datetime.now()
+
+        else:
+            logger.debug(f"Unknown msg type {msg_type} from {peer_id[:12]}")
+
+    # ── Local file scanning ────────────────────────────────────────────
 
     async def _scan_local_files(self):
         logger.debug("Scanning local files…")
-        new_files: Dict[str, FileInfo] = {}
+        new_files: Dict[str, FileRecord] = {}
 
         for root, dirs, files in os.walk(self._sync_dir):
+            # Skip hidden directories
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
             for filename in files:
+                if filename.startswith("."):
+                    continue
                 fp  = os.path.join(root, filename)
                 rel = os.path.relpath(fp, self._sync_dir)
                 try:
-                    st = os.stat(fp)
-                    new_files[rel] = FileInfo(
-                        path=rel,
-                        size=st.st_size,
-                        mtime=st.st_mtime,
-                        hash=await self._hash_file(fp),
+                    st        = os.stat(fp)
+                    file_hash = _sha256(fp)
+
+                    # Preserve existing vector clock if hash unchanged
+                    existing = self._local_files.get(rel)
+                    if existing and existing.hash == file_hash:
+                        version = existing.version
+                    else:
+                        # File is new or changed: increment our device counter
+                        old_version = existing.version if existing else {}
+                        version = dict(old_version)
+                        version[self._device_id] = \
+                            version.get(self._device_id, 0) + 1
+
+                    new_files[rel] = FileRecord(
+                        path=rel, size=st.st_size,
+                        mtime=st.st_mtime, hash=file_hash,
+                        version=version,
                     )
                 except Exception as exc:
                     logger.warning(f"Error scanning {fp}: {exc}")
 
         self._local_files = new_files
-        logger.info(f"Found {len(self._local_files)} local file(s)")
-
-    async def _hash_file(self, path: str) -> str:
-        h = hashlib.sha256()
-        try:
-            with open(path, "rb") as f:
-                while chunk := f.read(65536):
-                    h.update(chunk)
-            return h.hexdigest()
-        except Exception:
-            return ""
-
-    # ------------------------------------------------------------------ #
-    # Queries                                                              #
-    # ------------------------------------------------------------------ #
-
-    def get_status(self) -> SyncStatus:
-        self._status.files_total = len(self._local_files)
-        return self._status
-
-    def is_running(self) -> bool:
-        return self._running
-
-    @property
-    def sync_dir(self) -> str:
-        return self._sync_dir
+        self._status.files_local = len(new_files)
+        logger.info(f"Found {len(new_files)} local file(s)")

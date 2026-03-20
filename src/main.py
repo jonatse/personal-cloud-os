@@ -180,16 +180,6 @@ class PersonalCloudOS:
         except Exception as e:
             logger.error(f"Failed to start peer link service: {e}")
 
-        # When a link is established, set up RNS.Resource receiver for sync
-        def _on_link_for_resources(peer_id, state):
-            from services.peer_link import LinkState
-            if state == LinkState.CONNECTED:
-                try:
-                    self.sync_engine.setup_resource_receiver(peer_id)
-                except Exception as e:
-                    logger.debug(f"setup_resource_receiver error: {e}")
-        self.peer_link_service.register_link_callback(_on_link_for_resources)
-        
         # Start sync engine
         try:
             await self.sync_engine.start()
