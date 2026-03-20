@@ -52,7 +52,7 @@ SAM_HOST = "127.0.0.1"
 SAM_PORT = 7656
 
 # How long to wait for i2pd SAM bridge to become available
-SAM_STARTUP_TIMEOUT = 60   # seconds
+SAM_STARTUP_TIMEOUT = 300   # seconds (5 minutes for first tunnel build)
 
 # Reticulum config path
 RNS_CONFIG_PATH = os.path.expanduser("~/.reticulum/config")
@@ -84,6 +84,7 @@ class I2PManager:
         self._available   = False  # True once SAM bridge is confirmed up
         self._running     = False
         self._we_started  = False  # True if we spawned i2pd ourselves
+        self._output_thread = None  # Thread to read i2pd output
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -106,16 +107,19 @@ class I2PManager:
 
         logger.info(f"I2P: found i2pd at {i2pd_bin}")
 
-        # Step 2: Patch Reticulum config now (before RNS reads it)
+        # Step 2: Check i2pd version
+        self._check_i2pd_version(i2pd_bin)
+
+        # Step 3: Patch Reticulum config now (before RNS reads it)
         self._patch_rns_config()
 
-        # Step 3: Is SAM bridge already up? (i2pd already running externally)
+        # Step 4: Is SAM bridge already up? (i2pd already running externally)
         if self._sam_reachable():
             logger.info("I2P: SAM bridge already available (i2pd already running)")
             self._available = True
             return
 
-        # Step 4: Start i2pd in background — don't block startup.
+        # Step 5: Start i2pd in background — don't block startup.
         # The SAM bridge takes 2-5 minutes on first run while I2P builds
         # tunnels. We fire it off and let a background thread monitor it.
         # Reticulum will use the I2P interface automatically once it's ready.
@@ -161,6 +165,18 @@ class I2PManager:
         else:
             binary_source = "not found"
 
+        process_status = None
+        if self._process:
+            try:
+                # Check if process is still running
+                self._process.poll()
+                if self._process.returncode is None:
+                    process_status = "running"
+                else:
+                    process_status = f"exited with code {self._process.returncode}"
+            except Exception as e:
+                process_status = f"error: {e}"
+
         return {
             "available":      self._available,
             "sam_host":       SAM_HOST,
@@ -168,6 +184,8 @@ class I2PManager:
             "we_started":     self._we_started,
             "binary_source":  binary_source,
             "binary_path":    binary_path,
+            "process_status": process_status,
+            "pid":            self._process.pid if self._process else None,
         }
 
     # ------------------------------------------------------------------ #
@@ -220,6 +238,23 @@ class I2PManager:
 
         return None
 
+    def _check_i2pd_version(self, binary: str):
+        """Check and log i2pd version"""
+        try:
+            result = subprocess.run(
+                [binary, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                version_line = result.stdout.strip().split('\n')[0]
+                logger.debug(f"I2P: i2pd version: {version_line}")
+            else:
+                logger.warning(f"I2P: could not get i2pd version: {result.stderr}")
+        except Exception as e:
+            logger.warning(f"I2P: version check failed: {e}")
+
     def _launch_i2pd_background(self, binary: str):
         """
         Start i2pd as a subprocess and monitor it in a background thread.
@@ -228,12 +263,17 @@ class I2PManager:
         """
         try:
             self._process = subprocess.Popen(
-                [binary, "--daemon=false", "--log=stdout", "--loglevel=warn"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                [binary, "--log=stdout", "--loglevel=info"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
             )
             self._we_started = True
             logger.info(f"I2P: i2pd started in background (pid {self._process.pid})")
+            
+            # Start output reading threads
+            self._start_output_reading()
+            
         except Exception as e:
             logger.error(f"I2P: could not launch i2pd: {e}")
             return
@@ -246,6 +286,36 @@ class I2PManager:
         )
         t.start()
 
+    def _start_output_reading(self):
+        """Start threads to read and log i2pd output"""
+        def read_stdout():
+            while self._process and self._running:
+                try:
+                    line = self._process.stdout.readline()
+                    if not line:
+                        break
+                    logger.debug(f"I2P: i2pd stdout: {line.rstrip()}")
+                except Exception as e:
+                    logger.debug(f"I2P: error reading stdout: {e}")
+                    break
+                    
+        def read_stderr():
+            while self._process and self._running:
+                try:
+                    line = self._process.stderr.readline()
+                    if not line:
+                        break
+                    logger.debug(f"I2P: i2pd stderr: {line.rstrip()}")
+                except Exception as e:
+                    logger.debug(f"I2P: error reading stderr: {e}")
+                    break
+                    
+        self._output_thread = threading.Thread(target=read_stdout, daemon=True, name="i2p-stdout")
+        self._output_thread.start()
+        
+        stderr_thread = threading.Thread(target=read_stderr, daemon=True, name="i2p-stderr")
+        stderr_thread.start()
+
     def _wait_for_sam(self):
         """
         Background thread: polls SAM bridge until it's up or timeout.
@@ -254,24 +324,59 @@ class I2PManager:
         """
         logger.info(f"I2P: monitoring SAM bridge (up to {SAM_STARTUP_TIMEOUT}s)...")
         deadline = time.time() + SAM_STARTUP_TIMEOUT
+        attempts = 0
         while time.time() < deadline and self._running:
+            attempts += 1
             if self._sam_reachable():
                 self._available = True
                 logger.info("I2P: SAM bridge is up — internet peer discovery enabled")
                 return
+            
+            # Log process status periodically
+            if attempts % 6 == 0:  # Every 30 seconds
+                process_status = self._get_process_status()
+                logger.debug(f"I2P: periodic check - {process_status}")
+                
             time.sleep(5)
+            
         if not self._available:
-            logger.info(
-                "I2P: SAM bridge not yet ready — i2pd may still be building tunnels. "
-                "Internet discovery will enable automatically when ready."
+            process_status = self._get_process_status()
+            logger.warning(
+                f"I2P: SAM bridge not ready after {SAM_STARTUP_TIMEOUT} seconds.\n"
+                f"  Process status: {process_status}\n"
+                "  i2pd may still be building tunnels. Check i2pd output for details."
             )
+
+    def _get_process_status(self) -> str:
+        """Get detailed process status for debugging"""
+        if not self._process:
+            return "No i2pd process"
+            
+        try:
+            self._process.poll()
+            if self._process.returncode is None:
+                return f"Running (pid: {self._process.pid})"
+            else:
+                return f"Exited with code: {self._process.returncode}"
+        except Exception as e:
+            return f"Error checking process: {e}"
 
     def _sam_reachable(self) -> bool:
         """Check if the i2pd SAM bridge is accepting connections."""
         try:
             with socket.create_connection((SAM_HOST, SAM_PORT), timeout=2):
                 return True
-        except (ConnectionRefusedError, OSError, TimeoutError):
+        except ConnectionRefusedError:
+            logger.debug(f"I2P: SAM bridge not reachable on {SAM_HOST}:{SAM_PORT} (Connection refused)")
+            return False
+        except TimeoutError:
+            logger.debug(f"I2P: SAM bridge not reachable on {SAM_HOST}:{SAM_PORT} (Timeout)")
+            return False
+        except OSError as e:
+            logger.debug(f"I2P: SAM bridge not reachable on {SAM_HOST}:{SAM_PORT}: {e}")
+            return False
+        except Exception as e:
+            logger.debug(f"I2P: SAM bridge check failed: {e}")
             return False
 
     # ------------------------------------------------------------------ #
