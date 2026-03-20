@@ -102,6 +102,9 @@ class PersonalCloudOS:
             self.reticulum_service
         )
         self.reticulum_service.set_peer_link_service(self.peer_link_service)
+        # Give SyncEngine a back-reference on PeerLinkService so inbound
+        # resource callbacks can find it.
+        # (set after sync_engine is created below)
 
         # Transport manager — sits above PeerLinkService, below SyncEngine
         from transport import TransportManager
@@ -115,6 +118,7 @@ class PersonalCloudOS:
             peer_link_service=self.peer_link_service,
             transport_manager=self.transport_manager,
         )
+        self.peer_link_service._sync_engine = self.sync_engine
         
         # Initialize container manager
         self.container_manager = ContainerManager(self.config, event_bus)

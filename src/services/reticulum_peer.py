@@ -372,6 +372,10 @@ class ReticulumPeerService:
                                             pls._link_info[peer_id] = LinkInfo(
                                                 peer_id=peer_id,
                                                 peer_name=peer.name)
+                                    # Tell sync engine to set up resource receiver for this link
+                                    sync_engine = getattr(pls, '_sync_engine', None)
+                                    if sync_engine is not None:
+                                        sync_engine._setup_resource_receiver(peer_id)
                                     break
                 except Exception:
                     pass
@@ -384,6 +388,53 @@ class ReticulumPeerService:
 
         link.set_packet_callback(_route_packet)
         logger.debug("Inbound link: packet callback registered")
+
+        # Set up RNS.Resource receiver on inbound links too,
+        # so the remote can send files to us via this link.
+        pls = self._peer_link_service
+        if pls is not None:
+            # We don't know peer_id yet at this point, so we accept all resources
+            # and let _on_resource_concluded figure out the path from metadata.
+            link.set_resource_strategy(RNS.Link.ACCEPT_APP)
+            link.set_resource_callback(lambda res: True)  # accept all
+            link.set_resource_concluded_callback(
+                lambda res: self._on_inbound_resource(res))
+        logger.debug("Inbound link: resource receiver set up")
+
+    def _on_inbound_resource(self, resource):
+        """
+        Handle a completed inbound RNS.Resource on an unknown-peer link.
+        Delegates to SyncEngine._on_resource_concluded if peer can be identified.
+        """
+        try:
+            if resource.status != RNS.Resource.COMPLETE:
+                return
+            # Find SyncEngine via PeerLinkService -> SyncEngine reference
+            # We stored sync_engine on pls in main.py
+            pls = self._peer_link_service
+            if pls is None:
+                return
+            sync = getattr(pls, '_sync_engine', None)
+            if sync is None:
+                return
+            # Find peer_id from the link
+            link = resource.link if hasattr(resource, 'link') else None
+            if link is None:
+                return
+            peer_id = None
+            with self._lock:
+                for pid, lnk in self._links.items():
+                    if lnk is link:
+                        peer_id = pid
+                        break
+            if peer_id is None:
+                peer_id = pls._peer_id_for_link(link)
+            if peer_id is None:
+                logger.warning("Inbound resource: could not identify peer, dropping")
+                return
+            sync._on_resource_concluded(peer_id, resource)
+        except Exception as exc:
+            logger.error(f"Error in _on_inbound_resource: {exc}", exc_info=True)
 
     def _handle_announce(self, destination_hash, announced_identity, app_data):
         """Handle incoming peer announcement from Reticulum."""

@@ -313,6 +313,9 @@ class SyncEngine:
         logger.info(
             f"Received index from {peer_id[:12]}: {len(remote_files)} file(s)")
 
+        # Ensure resource receiver is set up for this peer's link
+        self._setup_resource_receiver(peer_id)
+
         # Compute what we need
         needed = self._compute_needed(remote_files)
         if not needed:
@@ -377,6 +380,9 @@ class SyncEngine:
             logger.warning(f"Requested file not found: {rel_path}")
             return
 
+        # Small delay to ensure remote's resource receiver is ready
+        await asyncio.sleep(0.5)
+
         link = self.peer_link_service._links.get(peer_id)
         if not link or link.status != RNS.Link.ACTIVE:
             logger.warning(f"No active link to {peer_id[:12]} for file send")
@@ -387,7 +393,7 @@ class SyncEngine:
             if peer_id in self._outbound and rel_path in self._outbound[peer_id]:
                 logger.debug(f"Already sending {rel_path} to {peer_id[:12]}, skipping")
                 return
-            self._outbound.setdefault(peer_id, {})[rel_path] = None  # placeholder
+            self._outbound.setdefault(peer_id, {})[rel_path] = None
 
         file_size = os.path.getsize(full_path)
         file_hash = _sha256(full_path)
@@ -407,15 +413,19 @@ class SyncEngine:
                 "version": version,
             }).encode()
 
+            result = {"done": False, "success": False}
+
             def _on_concluded(resource, pid=peer_id, path=rel_path):
                 with self._lock:
                     self._outbound.get(pid, {}).pop(path, None)
                 if resource.status == RNS.Resource.COMPLETE:
                     logger.info(f"Delivered {path} → {pid[:12]}")
+                    result["success"] = True
                 else:
-                    logger.error(
+                    logger.warning(
                         f"Resource failed for {path} → {pid[:12]} "
-                        f"(status={resource.status})")
+                        f"(status={resource.status}) — will retry")
+                result["done"] = True
 
             resource = RNS.Resource(
                 data=data,
@@ -432,6 +442,23 @@ class SyncEngine:
             logger.debug(
                 f"RNS.Resource advertised: {rel_path} "
                 f"({resource.get_transfer_size()/1024:.1f} KB on wire)")
+
+            # Wait for completion (up to 300s for large files)
+            for _ in range(600):
+                await asyncio.sleep(0.5)
+                if result["done"]:
+                    break
+
+            self._status.active_transfers = max(0, self._status.active_transfers - 1)
+
+            # Retry once if failed
+            if not result["success"] and result["done"]:
+                logger.info(f"Retrying {rel_path} → {peer_id[:12]} in 3s…")
+                await asyncio.sleep(3)
+                # Recurse once (retry flag via _outbound check prevents infinite loop)
+                link2 = self.peer_link_service._links.get(peer_id)
+                if link2 and link2.status == RNS.Link.ACTIVE:
+                    await self._send_file_resource(peer_id, rel_path)
 
         except Exception as exc:
             with self._lock:
