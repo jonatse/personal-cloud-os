@@ -10,3 +10,13 @@ dist/
 build/
 *.log
 src/core/device_inventory.json
+
+# Vendor directory — packages are committed, pycache is not
+src/vendor/**/__pycache__/
+src/vendor/**/*.pyc
+src/vendor/**/*.pyo
+
+# PyInstaller output
+dist/
+build/
+*.spec

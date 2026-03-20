@@ -160,7 +160,7 @@ technical rationale and dependency audit.
       Replace with a pure-Python XBM/base64 icon or just skip the icon.
       This removes 3.4MB of package + 12 system library dependencies.
 
-- [ ] **S3** Create `src/vendor/` directory structure
+- [x] **S3** Create `src/vendor/` directory structure
       ```
       src/vendor/
       ├── README.md        ← documents what is here and why
