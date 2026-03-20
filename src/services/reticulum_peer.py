@@ -161,8 +161,8 @@ class ReticulumPeerService:
         class _AnnounceHandler:
             aspect_filter = None  # Receive all announces, filter in received_announce
             def __init__(self, svc): self.svc = svc
-            def received_announce(self, dest_hash, identity, app_data):
-                self.svc._on_announce(dest_hash, identity, app_data)
+            def received_announce(self, destination_hash=None, announced_identity=None, app_data=None):
+                self.svc._on_announce(destination_hash, announced_identity, app_data)
 
         RNS.Transport.register_announce_handler(_AnnounceHandler(self))
         logger.info(f"Announce handler registered for {APP_NAME}.{PEER_ASPECT}")
