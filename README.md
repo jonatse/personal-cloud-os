@@ -13,7 +13,7 @@ A self-contained, offline-first personal cloud that syncs files across your devi
 | File sync between devices | Working |
 | Persistent device identity | Working |
 | Curses CLI (split-screen) | Working |
-| Identity-based access control | In Progress |
+| Identity-based access control | Working |
 
 ---
 

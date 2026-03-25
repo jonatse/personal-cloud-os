@@ -14,7 +14,9 @@
 #
 # Usage:
 #   ./scripts/deploy.sh                    # deploy current code
-#   ./scripts/deploy.sh --bump-version     # increment patch, then deploy
+#   ./scripts/deploy.sh --bump-version     # increment patch (1.2.6 → 1.2.7)
+#   ./scripts/deploy.sh --bump-minor       # increment minor (1.2.6 → 1.3.0)
+#   ./scripts/deploy.sh --bump-major       # increment major (1.2.6 → 2.0.0)
 #   ./scripts/deploy.sh --no-tail          # deploy and exit (no log tail)
 #
 # Requirements:
@@ -41,12 +43,16 @@ POLL_INTERVAL=2
 PHASE_TIMEOUT=60    # seconds before a phase is declared failed
 
 # ── Flags ─────────────────────────────────────────────────────────────
-BUMP_VERSION=false
+BUMP_PATCH=false
+BUMP_MINOR=false
+BUMP_MAJOR=false
 NO_TAIL=false
 
 for arg in "$@"; do
   case $arg in
-    --bump-version) BUMP_VERSION=true ;;
+    --bump-version) BUMP_PATCH=true ;;
+    --bump-minor)   BUMP_MINOR=true ;;
+    --bump-major)   BUMP_MAJOR=true ;;
     --no-tail)      NO_TAIL=true ;;
   esac
 done
@@ -62,6 +68,33 @@ fail() { echo -e "${RED}  ✗ $*${RESET}"; exit 1; }
 hdr()  { echo -e "\n${BOLD}${CYAN}══ $* ${RESET}"; }
 
 # ── Helpers ───────────────────────────────────────────────────────────
+
+# Analyze git commits since last tag to suggest version bump type
+# Returns: "major", "minor", or "patch"
+analyze_commits() {
+  local last_tag
+  last_tag=$(cd "$PROJECT" && git describe --tags --abbrev=0 2>/dev/null || echo "")
+  
+  if [ -z "$last_tag" ]; then
+    echo "patch"
+    return
+  fi
+  
+  local commits
+  commits=$(cd "$PROJECT" && git log "$last_tag.." --format="%s" 2>/dev/null || echo "")
+  
+  if echo "$commits" | grep -qi "BREAKING CHANGE"; then
+    echo "major"
+    return
+  fi
+  
+  if echo "$commits" | grep -q "^feat:"; then
+    echo "minor"
+    return
+  fi
+  
+  echo "patch"
+}
 
 # Upload scripts to laptop once (idempotent)
 upload_scripts() {
@@ -148,15 +181,27 @@ hdr "Phase 0: Prep"
 VERSION_FILE="$PROJECT/src/core/version.py"
 CURRENT_VERSION=$(grep '__version__' "$VERSION_FILE" | grep -o '"[^"]*"' | tr -d '"')
 
-if $BUMP_VERSION; then
+if $BUMP_MAJOR || $BUMP_MINOR || $BUMP_PATCH; then
   IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
-  PATCH=$((PATCH + 1))
+  
+  if $BUMP_MAJOR; then
+    MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0
+  elif $BUMP_MINOR; then
+    MINOR=$((MINOR + 1)); PATCH=0
+  else
+    PATCH=$((PATCH + 1))
+  fi
+  
   NEW_VERSION="$MAJOR.$MINOR.$PATCH"
   sed -i "s/__version__ = \"$CURRENT_VERSION\"/__version__ = \"$NEW_VERSION\"/" "$VERSION_FILE"
   CURRENT_VERSION="$NEW_VERSION"
   ok "Version bumped to v$CURRENT_VERSION"
 else
-  info "Deploying v$CURRENT_VERSION (use --bump-version to increment)"
+  suggested=$(analyze_commits)
+  info "Deploying v$CURRENT_VERSION (use --bump-version, --bump-minor, or --bump-major)"
+  if [ "$suggested" != "patch" ]; then
+    warn "Note: commits since last tag suggest --bump-$suggested"
+  fi
 fi
 
 TARGET_VERSION="$CURRENT_VERSION"
@@ -167,6 +212,14 @@ rm -f "$DEPLOY_DIR_LOCAL"/{kill,pull,restart}_status.json
 
 # Upload helper scripts to laptop
 upload_scripts
+
+# Verify documentation consistency before deploying
+info "Verifying documentation consistency..."
+if ! "$SCRIPT_DIR/verify_docs.sh" --all > /dev/null 2>&1; then
+  warn "Documentation verification failed — continuing anyway (non-fatal)"
+else
+  ok "Documentation verified"
+fi
 
 # ── Phase 1+2: Push to GitHub AND kill both machines simultaneously ───
 hdr "Phase 1+2: Push + Kill (parallel)"
