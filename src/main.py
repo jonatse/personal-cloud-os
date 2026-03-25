@@ -243,6 +243,7 @@ class PersonalCloudOS:
             loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
             loop_thread.start()
             cli = CLIInterface(self)
+            self.cli_interface = cli  # Add this line so commands can access it
             try:
                 cli.start()
             except KeyboardInterrupt:

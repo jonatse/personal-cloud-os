@@ -408,6 +408,103 @@ This keeps services decoupled and testable in isolation.
 
 ---
 
+## Key Architectural Lesson: Don't Reimplement RNS
+
+### The Problem
+
+Early in development, we attempted to build custom protocols on top of RNS:
+- Custom packet framing and routing
+- Custom link management
+- Custom chunking and flow control
+
+This created several problems:
+1. **Fighting with RNS** — Our code conflicted with RNS's built-in mechanisms
+2. **Race conditions** — Duplicate state between our layer and RNS caused sync issues
+3. **Reinventing the wheel** — RNS already provides everything we needed natively
+4. **Bloat** — Extra code that just added complexity without benefit
+
+### The Solution
+
+Use RNS natively:
+- `link.request()` — Sends requests with built-in retry/timeout
+- `destination.register_request_handler()` — Registers handlers, RNS auto-routes
+- `RNS.Resource` — Handles chunking, windowing, flow control automatically
+- Single link per peer — Already saturates LAN bandwidth
+
+### What We Removed
+
+- **PeerDiscoveryService** — Extra abstraction layer that duplicated RNS functionality
+- **Custom packet routing** — No set_packet_callback, no _route_packet
+- **Manual chunking** — RNS.Resource handles it
+
+### When to Add New Protocol Features
+
+Ask: "Does RNS already provide this?"
+- If yes → Use RNS native (usually the case)
+- If no → Implement carefully, keeping it minimal and focused
+
+The mesh routing is handled by RNS. PCOS handles access control and services.
+
+---
+
+## Device Inventory & Self-Healing Network
+
+### Vision
+
+Every device in your ownership circle shares its information with other trusted devices:
+- Hardware specs (CPU, RAM, GPU, storage)
+- Network capabilities (LAN, I2P, WiFi, cellular)
+- RNS identity (for mesh routing)
+- Available services (what it can offer to the network)
+- Encrypted recovery credentials (for fallback access)
+
+### Sharing Rules
+
+| Identity Type | What They See |
+|--------------|----------------|
+| Personal (same identity) | Full device inventory |
+| Circle (friend/family) | Minimal (enough to route through them) |
+| Unknown | Nothing |
+
+### Self-Repair Capability
+
+If a device breaks (software crash, misconfiguration, etc.):
+
+1. **Primary recovery**: Other devices connect via RNS mesh to diagnose/fix
+   - RNS works over LAN, I2P (internet), or mesh radio
+   - No external network needed for local recovery
+
+2. **Fallback recovery**: If RNS itself is broken (rare), use backup networks:
+   - SSH (if enabled and reachable)
+   - Headscale/Tailscale VPN (separate network path)
+   - Any other available network interface
+
+The fallback is for **when RNS itself is not working** — you need an independent path to reach the device to reinstall/repair RNS.
+
+### Security Model
+
+```
+Physical access ≠ Data access
+```
+
+Even if someone steals your device and extracts the storage:
+- They get the app code (replicatable, not secret)
+- They don't get your files (encrypted with your identity key)
+- They don't get stored credentials (encrypted, key not on device)
+
+The device inventory itself should be encrypted so it can't be read by attackers.
+
+### Information Pool
+
+The shared device inventory (`~/.local/share/pcos/device_inventory.json`) becomes:
+- A map of what's available in your personal cloud
+- A tool for routing (knowing which device can help with what)
+- A recovery resource (knowing how to reach each device)
+
+This is different from GitHub-hosted deployment — the network heals itself.
+
+---
+
 ## Future Phases
 
 ### Phase 2 — Encrypted P2P Messaging

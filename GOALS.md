@@ -78,8 +78,8 @@ APPLICATION LAYER (PCOS):
 - [x] P1.3 Peer announces stored in _peers dict
 - [x] P1.4 Fix create_link() (Bug B2)
 - [x] P1.5 Fix stop() guard (Bug B1)
-- [ ] P1.6 Verify encrypted link end-to-end
-- [ ] P1.7 Enable I2P interface
+- [x] P1.6 Verify encrypted link end-to-end
+- [x] P1.7 Enable I2P interface
 
 ---
 
@@ -155,10 +155,10 @@ Friend:
 - [x] P2.2 Header auto-refreshes
 - [x] P2.3 Command crashes handled
 - [x] P2.4 Arrow key history
-- [ ] P2.5 Fix cmd_quit (Bug B9)
-- [ ] P2.6 Implement cmd_start/stop/restart
+- [x] P2.5 Fix cmd_quit (Bug B9)
+- [x] P2.6 Implement cmd_start/stop/restart
 - [ ] P2.7 Fix OutputRedirect.fileno() (Bug B8)
-- [ ] P2.8 Add logs command
+- [x] P2.8 Add logs command
 
 ---
 

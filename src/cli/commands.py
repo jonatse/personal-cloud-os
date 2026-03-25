@@ -30,6 +30,7 @@ class CommandHandler:
             'identity': self.cmd_identity,
             'circle': self.cmd_circle,
             'link': self.cmd_link,
+            'logs': self.cmd_logs,
         }
         self._identity_manager = None
 
@@ -59,6 +60,7 @@ class CommandHandler:
             'identity': 'Manage identity (create, show, export, import, show-qr)',
             'circle': 'Manage trust circles (create, list, add, remove)',
             'link': 'Show link status and verify encryption',
+            'logs': 'Show application logs (optional: --follow, --level LEVEL, lines)',
         }
     
     def execute(self, cmd: str) -> bool:
@@ -394,35 +396,122 @@ class CommandHandler:
     def cmd_start(self, args) -> bool:
         """Start a service."""
         if not args:
-            print("Usage: start <peers|sync|container|all>")
+            print("Usage: start <peers|sync|container|i2p|all>")
             return True
         
+        import asyncio
         service = args[0]
-        print(f"Starting {service}...")
-        # Implementation depends on service
-        print(f"{service} started.")
+        valid_services = ['peers', 'sync', 'container', 'i2p', 'all']
+        
+        if service not in valid_services:
+            print(f"Unknown service: {service}. Valid: {valid_services}")
+            return True
+        
+        async def do_start():
+            services_to_start = []
+            if service == 'all':
+                services_to_start = ['peers', 'sync', 'container', 'i2p']
+            else:
+                services_to_start = [service]
+            
+            for svc in services_to_start:
+                if svc == 'peers':
+                    await self.app.reticulum_service.start()
+                elif svc == 'sync':
+                    await self.app.sync_engine.start()
+                elif svc == 'container':
+                    await self.app.container_manager.start()
+                elif svc == 'i2p':
+                    await self.app.i2p_manager.start()
+        
+        try:
+            asyncio.run(do_start())
+            print(f"✓ {service} started")
+        except Exception as e:
+            print(f"✗ Failed to start {service}: {e}")
+        
         return True
     
     def cmd_stop(self, args) -> bool:
         """Stop a service."""
         if not args:
-            print("Usage: stop <peers|sync|container|all>")
+            print("Usage: stop <peers|sync|container|i2p|all>")
             return True
         
+        import asyncio
         service = args[0]
-        print(f"Stopping {service}...")
-        print(f"{service} stopped.")
+        valid_services = ['peers', 'sync', 'container', 'i2p', 'all']
+        
+        if service not in valid_services:
+            print(f"Unknown service: {service}. Valid: {valid_services}")
+            return True
+        
+        async def do_stop():
+            services_to_stop = []
+            if service == 'all':
+                services_to_stop = ['peers', 'sync', 'container', 'i2p']
+            else:
+                services_to_stop = [service]
+            
+            for svc in services_to_stop:
+                if svc == 'peers':
+                    await self.app.reticulum_service.stop()
+                elif svc == 'sync':
+                    await self.app.sync_engine.stop()
+                elif svc == 'container':
+                    await self.app.container_manager.stop()
+                elif svc == 'i2p':
+                    await self.app.i2p_manager.stop()
+        
+        try:
+            asyncio.run(do_stop())
+            print(f"✓ {service} stopped")
+        except Exception as e:
+            print(f"✗ Failed to stop {service}: {e}")
+        
         return True
     
     def cmd_restart(self, args) -> bool:
         """Restart a service."""
         if not args:
-            print("Usage: restart <peers|sync|container|all>")
+            print("Usage: restart <peers|sync|container|i2p|all>")
             return True
         
+        import asyncio
         service = args[0]
-        print(f"Restarting {service}...")
-        print(f"{service} restarted.")
+        valid_services = ['peers', 'sync', 'container', 'i2p', 'all']
+        
+        if service not in valid_services:
+            print(f"Unknown service: {service}. Valid: {valid_services}")
+            return True
+        
+        async def do_restart():
+            services_to_restart = []
+            if service == 'all':
+                services_to_restart = ['peers', 'sync', 'container', 'i2p']
+            else:
+                services_to_restart = [service]
+            
+            for svc in services_to_restart:
+                if svc == 'peers':
+                    await self.app.reticulum_service.stop()
+                    await self.app.reticulum_service.start()
+                elif svc == 'sync':
+                    await self.app.sync_engine.stop()
+                    await self.app.sync_engine.start()
+                elif svc == 'container':
+                    await self.app.container_manager.stop()
+                    await self.app.container_manager.start()
+                elif svc == 'i2p':
+                    await self.app.i2p_manager.stop()
+                    await self.app.i2p_manager.start()
+        
+        try:
+            asyncio.run(do_restart())
+            print(f"✓ {service} restarted")
+        except Exception as e:
+            print(f"✗ Failed to restart {service}: {e}")
+        
         return True
     
     def cmd_clear(self, args) -> bool:
@@ -440,13 +529,21 @@ class CommandHandler:
     def cmd_quit(self, args) -> bool:
         """Stop the application and exit."""
         print("\nStopping Personal Cloud OS...")
-        import asyncio
+        
         loop = getattr(self.app, '_loop', None)
         if loop and loop.is_running():
-            asyncio.run_coroutine_threadsafe(self.app.stop(), loop)
+            # Schedule the stop on the event loop
+            # Use call_soon_threadsafe for reliable scheduling
+            import asyncio
+            loop.call_soon_threadsafe(lambda: asyncio.create_task(self.app.stop()))
+            # Also stop the CLI interface so it exits
+            cli_interface = getattr(self.app, 'cli_interface', None)
+            if cli_interface:
+                cli_interface.stop()
         else:
             # Fallback: set running flag so background loop exits
             self.app._running = False
+        
         return False
 
     def cmd_identity(self, args) -> bool:
@@ -829,4 +926,88 @@ class CommandHandler:
         else:
             print(f"  ✗ FAILED: {message}")
         print("─" * 50 + "\n")
+        return True
+
+    def cmd_logs(self, args) -> bool:
+        """Show application logs."""
+        import argparse
+        import os
+        import time
+
+        parser = argparse.ArgumentParser(prog='logs', add_help=False)
+        parser.add_argument('lines', nargs='?', type=int, default=50)
+        parser.add_argument('-f', '--follow', action='store_true')
+        parser.add_argument('--level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], default=None)
+
+        try:
+            parsed = parser.parse_args(args)
+        except SystemExit:
+            return True
+
+        log_path = os.path.expanduser('~/.local/share/pcos/logs/app.log')
+
+        if not os.path.exists(log_path):
+            print(f"Log file not found: {log_path}")
+            return True
+
+        level_priority = {
+            'DEBUG': 0,
+            'INFO': 1,
+            'WARNING': 2,
+            'ERROR': 3,
+        }
+
+        min_level = level_priority[parsed.level] if parsed.level else -1
+
+        def read_lines(num_lines):
+            try:
+                with open(log_path, 'r') as f:
+                    all_lines = f.readlines()
+                filtered = []
+                for line in all_lines[-num_lines:]:
+                    if parsed.level:
+                        for lvl in ['DEBUG', 'INFO', 'WARNING', 'ERROR']:
+                            if lvl in line:
+                                if level_priority[lvl] >= min_level:
+                                    filtered.append(line)
+                                break
+                    else:
+                        filtered.append(line)
+                return filtered
+            except Exception as e:
+                print(f"Error reading log file: {e}")
+                return []
+
+        def tail_logs():
+            try:
+                with open(log_path, 'r') as f:
+                    f.seek(0, 2)
+                    while True:
+                        line = f.readline()
+                        if not line:
+                            time.sleep(0.5)
+                            continue
+                        if parsed.level:
+                            for lvl in ['DEBUG', 'INFO', 'WARNING', 'ERROR']:
+                                if lvl in line:
+                                    if level_priority[lvl] >= min_level:
+                                        print(line.rstrip())
+                                    break
+                        else:
+                            print(line.rstrip())
+            except KeyboardInterrupt:
+                return
+            except Exception as e:
+                print(f"Error tailing log: {e}")
+
+        if parsed.follow:
+            print(f"Tailing {log_path} (Ctrl+C to exit)...\n")
+            tail_logs()
+        else:
+            lines = read_lines(parsed.lines)
+            if lines:
+                for line in lines:
+                    print(line.rstrip())
+            else:
+                print("No matching log entries found.")
         return True
