@@ -1,6 +1,9 @@
 """CLI Commands for Personal Cloud OS."""
 import sys
 import asyncio
+import json
+import logging
+import os
 from typing import Dict, Callable, Any
 
 
@@ -24,7 +27,17 @@ class CommandHandler:
             'clear': self.cmd_clear,
             'exit': self.cmd_exit,
             'quit': self.cmd_quit,
+            'identity': self.cmd_identity,
+            'circle': self.cmd_circle,
         }
+        self._identity_manager = None
+
+    def _get_identity_manager(self):
+        """Get or create identity manager."""
+        if self._identity_manager is None:
+            from core.identity import IdentityManager
+            self._identity_manager = IdentityManager()
+        return self._identity_manager
     
     def get_commands(self) -> Dict[str, str]:
         """Get command list with descriptions."""
@@ -42,6 +55,8 @@ class CommandHandler:
             'clear': 'Clear the screen',
             'exit': 'Exit the CLI (keeps running in background)',
             'quit': 'Exit and stop the application',
+            'identity': 'Manage identity (create, show, export, import, show-qr)',
+            'circle': 'Manage trust circles (create, list, add, remove)',
         }
     
     def execute(self, cmd: str) -> bool:
@@ -431,3 +446,256 @@ class CommandHandler:
             # Fallback: set running flag so background loop exits
             self.app._running = False
         return False
+
+    def cmd_identity(self, args) -> bool:
+        """Manage identity."""
+        import logging
+        import os
+
+        logger = logging.getLogger(__name__)
+        id_mgr = self._get_identity_manager()
+
+        subcommand = args[0] if args else 'show'
+
+        if subcommand in ('show', ''):
+            try:
+                id_mgr.load_or_create_identity()
+                identity_hash = id_mgr.get_identity_hash()
+                identity_path = id_mgr.get_identity_path()
+                trust_level = id_mgr.get_trust_level(identity_hash)
+
+                print("\n" + "─" * 50)
+                print("  IDENTITY")
+                print("─" * 50)
+                print(f"  Hash: {identity_hash[:32]}...")
+                print(f"  Path: {identity_path}")
+                print(f"  Trust Level: {trust_level}")
+                print("─" * 50 + "\n")
+                return True
+            except Exception as e:
+                print(f"Error showing identity: {e}")
+                logger.error(f"Error showing identity: {e}")
+                return True
+
+        if subcommand == 'create':
+            try:
+                if os.path.exists(id_mgr.get_identity_path()):
+                    print("WARNING: Identity already exists!")
+                    print("Creating a new identity will replace the existing one.")
+                    confirm = input("Are you sure? (yes/no): ")
+                    if confirm.lower() != 'yes':
+                        print("Cancelled.")
+                        return True
+
+                id_mgr.load_or_create_identity()
+                identity_hash = id_mgr.get_identity_hash()
+                print(f"Identity created successfully!")
+                print(f"Hash: {identity_hash[:32]}...")
+                logger.info(f"Created new identity: {identity_hash[:16]}...")
+                return True
+            except Exception as e:
+                print(f"Error creating identity: {e}")
+                logger.error(f"Error creating identity: {e}")
+                return True
+
+        if subcommand == 'export':
+            try:
+                id_mgr.load_or_create_identity()
+                exported = id_mgr.export_identity()
+                print("\n" + "─" * 50)
+                print("  IDENTITY EXPORT")
+                print("─" * 50)
+                print(exported)
+                print("─" * 50 + "\n")
+                return True
+            except Exception as e:
+                print(f"Error exporting identity: {e}")
+                logger.error(f"Error exporting identity: {e}")
+                return True
+
+        if subcommand == 'import':
+            if len(args) < 2:
+                print("Usage: identity import <base64>")
+                return True
+            try:
+                base64_str = args[1]
+                identity = id_mgr.import_identity(base64_str)
+                print(f"Identity imported successfully!")
+                print(f"Hash: {identity.hash.hex()[:32]}...")
+                logger.info(f"Imported identity: {identity.hash.hex()[:16]}...")
+                return True
+            except Exception as e:
+                print(f"Error importing identity: {e}")
+                logger.error(f"Error importing identity: {e}")
+                return True
+
+        if subcommand == 'show-qr':
+            try:
+                import qrcode
+                id_mgr.load_or_create_identity()
+                exported = id_mgr.export_identity()
+                qr = qrcode.QRCode(version=1, box_size=10, border=5)
+                qr.add_data(exported)
+                qr.make(fit=True)
+                qr.print_ascii()
+                print("\nScan this QR code to import identity.")
+                return True
+            except ImportError:
+                print("qrcode module not available.")
+                print("Install it with: pip install qrcode")
+                logger.warning("qrcode module not available for identity show-qr")
+                return True
+            except Exception as e:
+                print(f"Error showing QR: {e}")
+                logger.error(f"Error showing QR: {e}")
+                return True
+
+        if subcommand == 'import-qr':
+            print("Paste the base64 identity string below (press Enter twice to confirm):")
+            lines = []
+            while True:
+                try:
+                    line = input()
+                    if line == '':
+                        break
+                    lines.append(line)
+                except EOFError:
+                    break
+
+            if not lines:
+                print("No input received.")
+                return True
+
+            try:
+                base64_str = ''.join(lines).strip()
+                identity = id_mgr.import_identity(base64_str)
+                print(f"Identity imported successfully!")
+                print(f"Hash: {identity.hash.hex()[:32]}...")
+                logger.info(f"Imported identity via QR: {identity.hash.hex()[:16]}...")
+                return True
+            except Exception as e:
+                print(f"Error importing identity: {e}")
+                logger.error(f"Error importing identity: {e}")
+                return True
+
+        print(f"Unknown subcommand: {subcommand}")
+        print("Usage: identity <show|create|export|import|show-qr|import-qr>")
+        return True
+
+    def cmd_circle(self, args) -> bool:
+        """Manage trust circles."""
+        import logging
+
+        logger = logging.getLogger(__name__)
+        id_mgr = self._get_identity_manager()
+
+        subcommand = args[0] if args else 'list'
+
+        if subcommand in ('list', ''):
+            try:
+                circles = id_mgr.list_circles()
+                print("\n" + "─" * 50)
+                print("  TRUST CIRCLES")
+                print("─" * 50)
+                if circles:
+                    for circle in circles:
+                        print(f"  • {circle}")
+                else:
+                    print("  No circles found.")
+                    print("  Use 'circle create <name>' to create one.")
+                print("─" * 50 + "\n")
+                return True
+            except Exception as e:
+                print(f"Error listing circles: {e}")
+                logger.error(f"Error listing circles: {e}")
+                return True
+
+        if subcommand == 'create':
+            if len(args) < 2:
+                print("Usage: circle create <name>")
+                return True
+            try:
+                name = args[1]
+                circle_identity = id_mgr.create_circle(name)
+                print(f"Circle '{name}' created successfully!")
+                print(f"Identity: {circle_identity.hash.hex()[:32]}...")
+                logger.info(f"Created circle: {name}")
+                return True
+            except Exception as e:
+                print(f"Error creating circle: {e}")
+                logger.error(f"Error creating circle: {e}")
+                return True
+
+        if subcommand == 'show':
+            if len(args) < 2:
+                print("Usage: circle show <name>")
+                return True
+            try:
+                name = args[1]
+                circle_identity = id_mgr.get_circle(name)
+                if not circle_identity:
+                    print(f"Circle '{name}' not found.")
+                    return True
+
+                members_file = os.path.join(id_mgr._circles_dir, name, "members.json")
+                members = []
+                if os.path.exists(members_file):
+                    import json
+                    with open(members_file, "r") as f:
+                        members = json.load(f)
+
+                print("\n" + "─" * 50)
+                print(f"  CIRCLE: {name}")
+                print("─" * 50)
+                print(f"  Identity: {circle_identity.hash.hex()[:32]}...")
+                print(f"  Members: {len(members)}")
+                for member in members:
+                    print(f"    - {member[:32]}...")
+                print("─" * 50 + "\n")
+                return True
+            except Exception as e:
+                print(f"Error showing circle: {e}")
+                logger.error(f"Error showing circle: {e}")
+                return True
+
+        if subcommand == 'add':
+            if len(args) < 3:
+                print("Usage: circle add <name> <identity_base64>")
+                return True
+            try:
+                name = args[1]
+                identity_base64 = args[2]
+                success = id_mgr.add_to_circle(name, identity_base64)
+                if success:
+                    print(f"Identity added to circle '{name}'.")
+                    logger.info(f"Added identity to circle: {name}")
+                else:
+                    print(f"Failed to add identity to circle '{name}'.")
+                return True
+            except Exception as e:
+                print(f"Error adding to circle: {e}")
+                logger.error(f"Error adding to circle: {e}")
+                return True
+
+        if subcommand == 'remove':
+            if len(args) < 3:
+                print("Usage: circle remove <name> <identity_hash>")
+                return True
+            try:
+                name = args[1]
+                identity_hash = args[2]
+                success = id_mgr.remove_from_circle(name, identity_hash)
+                if success:
+                    print(f"Identity removed from circle '{name}'.")
+                    logger.info(f"Removed identity from circle: {name}")
+                else:
+                    print(f"Failed to remove identity from circle '{name}'.")
+                return True
+            except Exception as e:
+                print(f"Error removing from circle: {e}")
+                logger.error(f"Error removing from circle: {e}")
+                return True
+
+        print(f"Unknown subcommand: {subcommand}")
+        print("Usage: circle <list|create|show|add|remove>")
+        return True

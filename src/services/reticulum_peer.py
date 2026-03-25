@@ -24,6 +24,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 import RNS
 
+from core.access_control import RESOURCE_SYNC
+from core.version import __version__
+
 logger = logging.getLogger(__name__)
 
 APP_NAME         = "personalcloudos"
@@ -53,9 +56,10 @@ class ReticulumPeerService:
     transfer — is handled by RNS itself.
     """
 
-    def __init__(self, config, event_bus):
+    def __init__(self, config, event_bus, access_control=None):
         self.config     = config
         self.event_bus  = event_bus
+        self._access_control = access_control
 
         self._reticulum:   Optional[Any] = None
         self._identity:    Optional[Any] = None
@@ -173,34 +177,53 @@ class ReticulumPeerService:
                                link_id, remote_identity, requested_at):
         """Return our file index as msgpack-able bytes."""
         try:
+            remote_hash = None
+            if remote_identity and hasattr(remote_identity, "hash"):
+                remote_hash = remote_identity.hash.hex()
+
+            if self._access_control and remote_hash:
+                if not self._access_control.check_access(remote_hash, RESOURCE_SYNC):
+                    logger.warning(f"v{__version__} Index request denied: remote={remote_hash[:16]}...")
+                    return json.dumps({"error": "access_denied", "reason": "insufficient_trust"}).encode()
+
             if self._index_generator:
                 index = self._index_generator()
                 payload = json.dumps(index).encode()
-                logger.info(f"Index requested — returning {len(index)} files")
+                logger.info(f"v{__version__} Index requested — returning {len(index)} files")
                 return payload
         except Exception as exc:
-            logger.error(f"Index handler error: {exc}", exc_info=True)
+            logger.error(f"v{__version__} Index handler error: {exc}", exc_info=True)
         return b"{}"
 
     def _handle_file_request(self, path, data, req_id,
                               link_id, remote_identity, requested_at):
         """Return file bytes for the requested path."""
         try:
+            remote_hash = None
+            if remote_identity and hasattr(remote_identity, "hash"):
+                remote_hash = remote_identity.hash.hex()
+
             req_path = None
             if data:
                 req_path = json.loads(data).get("path") if isinstance(data, (bytes, str)) else None
             if not req_path:
-                logger.warning("File request with no path")
+                logger.warning(f"v{__version__} File request with no path")
                 return None
+
+            if self._access_control and remote_hash:
+                if not self._access_control.check_access(remote_hash, RESOURCE_SYNC + req_path):
+                    logger.warning(f"v{__version__} File request denied: remote={remote_hash[:16]}..., path={req_path}")
+                    return json.dumps({"error": "access_denied", "reason": "insufficient_trust"}).encode()
+
             if self._file_generator:
                 file_data = self._file_generator(req_path)
                 if file_data is not None:
-                    logger.info(f"File requested: {req_path} ({len(file_data)/1024:.1f} KB)")
+                    logger.info(f"v{__version__} File requested: {req_path} ({len(file_data)/1024:.1f} KB)")
                     return file_data
                 else:
-                    logger.warning(f"File not found: {req_path}")
+                    logger.warning(f"v{__version__} File not found: {req_path}")
         except Exception as exc:
-            logger.error(f"File handler error: {exc}", exc_info=True)
+            logger.error(f"v{__version__} File handler error: {exc}", exc_info=True)
         return None
 
     # ── Announce / peer discovery ──────────────────────────────────────

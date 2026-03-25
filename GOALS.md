@@ -1,17 +1,18 @@
 # Personal Cloud OS — Goals & Priority Tracking
 
-Last updated: 2026-03-20
+Last updated: 2026-03-25
 
 This file tracks what is being worked on, what is done, and what comes next.
 It is the sprint board. SPEC.md is the design document.
 
 ---
 
-## Current State (as of 2026-03-20)
+## Current State (as of 2026-03-25)
 
 The system boots, joins the LAN via Reticulum, discovers peers, syncs files,
-and shows everything in a live curses CLI. Two devices (debian desktop + pop-osmark
-laptop) are discovering each other and syncing files successfully!
+shows everything in a live curses CLI, and includes an Identity & Trust System
+for access control. Two devices (debian desktop + pop-osmark laptop) are 
+discovering each other and syncing files successfully!
 
 ---
 
@@ -115,22 +116,22 @@ UNKNOWN:
 
 ### Implementation
 
-- [ ] P1.5.1 Identity CLI:
-  - identity create
-  - identity show
-  - identity show-qr
-  - identity export
-  - identity import
+- [x] P1.5.1 Identity CLI:
+  - [x] identity create
+  - [x] identity show
+  - [x] identity show-qr
+  - [x] identity export
+  - [x] identity import
 
-- [ ] P1.5.2 QR code support (qrcode, pyzbar, opencv)
+- [x] P1.5.2 QR code support (qrcode, pyzbar, opencv)
 
-- [ ] P1.5.3 Circle management:
-  - circle create
-  - circle list
-  - circle add
-  - circle remove
+- [x] P1.5.3 Circle management:
+  - [x] circle create
+  - [x] circle list
+  - [x] circle add
+  - [x] circle remove
 
-- [ ] P1.5.4 Access control middleware
+- [x] P1.5.4 Access control middleware
 
 - [ ] P1.5.5 I2P integration
 
