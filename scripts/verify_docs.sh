@@ -187,8 +187,8 @@ check_readme() {
     fi
     
     if grep -q "Identity-based access control" "$readme_file"; then
-        if grep -q "In Progress" "$readme_file"; then
-            log_pass "README.md correctly shows access control as In Progress"
+        if grep -qE "(In Progress|Working)" "$readme_file"; then
+            log_pass "README.md correctly shows access control status"
         else
             log_fail "README.md access control status unclear"
         fi

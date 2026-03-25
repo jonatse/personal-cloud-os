@@ -29,6 +29,7 @@ class CommandHandler:
             'quit': self.cmd_quit,
             'identity': self.cmd_identity,
             'circle': self.cmd_circle,
+            'link': self.cmd_link,
         }
         self._identity_manager = None
 
@@ -57,6 +58,7 @@ class CommandHandler:
             'quit': 'Exit and stop the application',
             'identity': 'Manage identity (create, show, export, import, show-qr)',
             'circle': 'Manage trust circles (create, list, add, remove)',
+            'link': 'Show link status and verify encryption',
         }
     
     def execute(self, cmd: str) -> bool:
@@ -698,4 +700,133 @@ class CommandHandler:
 
         print(f"Unknown subcommand: {subcommand}")
         print("Usage: circle <list|create|show|add|remove>")
+        return True
+
+    def cmd_link(self, args) -> bool:
+        """Show link status and verify encryption."""
+        subcommand = args[0] if args else 'list'
+
+        if subcommand == 'verify':
+            return self._cmd_link_verify(args[1:] if len(args) > 1 else [])
+
+        print("\n" + "─" * 50)
+        print("  LINK STATUS")
+        print("─" * 50)
+
+        sync = getattr(self.app, 'sync_engine', None)
+        if not sync:
+            print("  Sync engine not available.")
+            print("─" * 50 + "\n")
+            return True
+
+        links = getattr(sync, '_links', {})
+        if not links:
+            print("  No active links.")
+            print("  Use 'link verify <peer>' to create and verify a link.")
+            print("─" * 50 + "\n")
+            return True
+
+        import RNS
+        status_names = {
+            RNS.Link.PENDING: "PENDING",
+            RNS.Link.HANDSHAKE: "HANDSHAKE",
+            RNS.Link.ACTIVE: "ACTIVE",
+            RNS.Link.CLOSED: "CLOSED",
+            RNS.Link.STALE: "STALE",
+        }
+
+        for peer_id, link in links.items():
+            peer_name = getattr(link.destination, 'name', peer_id.hex()[:16]) if link.destination else peer_id.hex()[:16]
+            status = status_names.get(link.status, str(link.status))
+            initiator = "Initiator" if link.initiator else "Responder"
+
+            print(f"  Peer: {peer_name}")
+            print(f"    Status: {status}")
+            print(f"    Role: {initiator}")
+
+            if link.status == RNS.Link.ACTIVE and link.rtt:
+                print(f"    RTT: {link.rtt:.4f}s")
+
+            try:
+                enc_status = link.get_encryption_status()
+                if enc_status:
+                    print(f"    Encryption: {enc_status}")
+                else:
+                    print(f"    Encryption: Not available")
+            except Exception:
+                print(f"    Encryption: Not available")
+
+            print()
+
+        print("─" * 50 + "\n")
+        return True
+
+    def _cmd_link_verify(self, args) -> bool:
+        """Verify a link by creating a test connection."""
+        import RNS
+
+        if not args:
+            print("Usage: link verify <peer_id_or_name>")
+            print("\nAvailable peers (from reticulum service):")
+            ret_service = getattr(self.app, 'reticulum_service', None)
+            if ret_service:
+                for peer in ret_service.get_peers():
+                    print(f"  {peer.name} ({peer.id.hex()[:16]}...)")
+            return True
+
+        target = args[0]
+        sync = getattr(self.app, 'sync_engine', None)
+        ret_service = getattr(self.app, 'reticulum_service', None)
+
+        if not sync or not ret_service:
+            print("  Error: sync_engine or reticulum_service not available")
+            print("─" * 50 + "\n")
+            return True
+
+        peer_id = None
+        if len(target) == 32 and all(c in '0123456789abcdefABCDEF' for c in target):
+            try:
+                peer_id = bytes.fromhex(target)
+            except ValueError:
+                pass
+
+        if not peer_id:
+            for peer in ret_service.get_peers():
+                if peer.name == target or target in peer.name:
+                    peer_id = peer.id
+                    break
+
+        if not peer_id:
+            print(f"  Error: peer '{target}' not found")
+            print("  Use 'peers' command to see available peers")
+            print("─" * 50 + "\n")
+            return True
+
+        async def verify_link():
+            link = ret_service.create_link(peer_id.hex())
+            if not link:
+                return False, "Failed to create link"
+
+            for _ in range(20):
+                await asyncio.sleep(0.5)
+                if link.status == RNS.Link.ACTIVE:
+                    rtt = link.rtt if link.rtt else 0
+                    return True, f"Link ACTIVE (RTT: {rtt:.3f}s)"
+                elif link.status == RNS.Link.CLOSED:
+                    return False, "Link closed during verification"
+
+            try:
+                link.teardown()
+            except Exception:
+                pass
+            return False, "Link verification timed out (10s)"
+
+        success, message = asyncio.run(verify_link())
+
+        print(f"\n  Verifying link to {target}...")
+        if success:
+            print(f"  ✓ SUCCESS: {message}")
+        else:
+            print(f"  ✗ FAILED: {message}")
+        print("─" * 50 + "\n")
         return True
