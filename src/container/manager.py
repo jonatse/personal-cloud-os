@@ -245,17 +245,85 @@ class ContainerManager:
         if os.path.exists(socket_path):
             os.unlink(socket_path)
         
-        # Create Unix socket server
+        # Create Unix socket server with threading for accept loop
         self._shell_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self._shell_socket.bind(socket_path)
         os.chmod(socket_path, 0o600)
         self._shell_socket.listen(1)
-        self._shell_socket.settimeout(1.0)
+        
+        # Start accept loop in background thread
+        self._shell_running = True
+        import threading
+        self._shell_accept_thread = threading.Thread(target=self._shell_accept_loop, daemon=True)
+        self._shell_accept_thread.start()
         
         logger.info(f"Shell server listening on {socket_path}")
     
+    def _shell_accept_loop(self):
+        """Accept shell connections and spawn interactive shell."""
+        import pty
+        import select
+        import os
+        import subprocess
+        
+        while self._shell_running:
+            try:
+                self._shell_socket.settimeout(1.0)
+                client, _ = self._shell_socket.accept()
+                
+                # Create pseudo-terminal
+                master, slave = pty.openpty()
+                
+                # Set up environment
+                env = os.environ.copy()
+                rootfs_bin = os.path.join(self._rootfs_path, "bin")
+                rootfs_sbin = os.path.join(self._rootfs_path, "sbin")
+                rootfs_usr_bin = os.path.join(self._rootfs_path, "usr", "bin")
+                rootfs_usr_sbin = os.path.join(self._rootfs_path, "usr", "sbin")
+                env["PATH"] = f"{rootfs_bin}:{rootfs_sbin}:{rootfs_usr_bin}:{rootfs_usr_sbin}:/usr/local/bin:/usr/bin:/bin"
+                env["HOME"] = self._home_path
+                env["TERM"] = "xterm-256color"
+                env["SHELL"] = "/bin/sh"
+                
+                # Spawn shell
+                proc = subprocess.Popen(
+                    ["/bin/sh"],
+                    stdin=slave,
+                    stdout=slave,
+                    stderr=slave,
+                    cwd=self._data_path,
+                    env=env,
+                    preexec_fn=os.setsid
+                )
+                
+                # Relay data between socket and PTY
+                while self._shell_running and proc.poll() is None:
+                    r, _, _ = select.select([client, master], [], [], 0.1)
+                    if client in r:
+                        data = client.recv(1024)
+                        if data:
+                            os.write(master, data)
+                    if master in r:
+                        data = os.read(master, 1024)
+                        if data:
+                            client.send(data)
+                
+                proc.terminate()
+                client.close()
+                os.close(master)
+                os.close(slave)
+                
+            except socket.timeout:
+                continue
+            except Exception as e:
+                if self._shell_running:
+                    logger.debug(f"Shell accept error: {e}")
+                break
+    
     async def _stop_shell_server(self):
         """Stop shell server."""
+        self._shell_running = False
+        
         if self._shell_socket:
             try:
                 self._shell_socket.close()
