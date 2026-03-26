@@ -31,6 +31,7 @@ class CommandHandler:
             'circle': self.cmd_circle,
             'link': self.cmd_link,
             'logs': self.cmd_logs,
+            'remote': self.cmd_remote,
         }
         self._identity_manager = None
 
@@ -1010,4 +1011,82 @@ class CommandHandler:
                     print(line.rstrip())
             else:
                 print("No matching log entries found.")
+        return True
+
+    def cmd_remote(self, args) -> bool:
+        """Execute a command on a remote peer."""
+        import argparse
+        
+        parser = argparse.ArgumentParser(prog='remote', add_help=False)
+        parser.add_argument('peer', nargs='?', default=None)
+        parser.add_argument('command', nargs='?', default=None)
+        parser.add_argument('-t', '--timeout', type=float, default=30.0)
+        
+        try:
+            parsed = parser.parse_args(args)
+        except SystemExit:
+            return True
+        
+        if not parsed.peer or not parsed.command:
+            print("\n" + "─" * 50)
+            print("  REMOTE COMMAND EXECUTION")
+            print("─" * 50)
+            print("  Usage: remote <peer> <command> [-t timeout]")
+            print("")
+            print("  Example: remote debian 'echo hello'")
+            print("           remote pop-osmark 'ps aux' -t 60")
+            print("")
+            print("  Available peers:")
+            ret_service = getattr(self.app, 'reticulum_service', None)
+            if ret_service:
+                for peer in ret_service.get_peers():
+                    print(f"    • {peer.name} ({peer.id[:16]}...)")
+            else:
+                print("    (no peers available)")
+            print("─" * 50 + "\n")
+            return True
+        
+        # Find peer by name or ID
+        ret_service = getattr(self.app, 'reticulum_service', None)
+        if not ret_service:
+            print("Error: reticulum service not available")
+            return True
+        
+        target_peer = None
+        for peer in ret_service.get_peers():
+            if peer.name == parsed.peer or parsed.peer in peer.id:
+                target_peer = peer
+                break
+        
+        if not target_peer:
+            print(f"Error: peer '{parsed.peer}' not found")
+            return True
+        
+        print(f"\nExecuting on {target_peer.name}...")
+        
+        async def run_command():
+            return await ret_service.execute_command(
+                target_peer.id,
+                parsed.command,
+                timeout=parsed.timeout
+            )
+        
+        try:
+            result = asyncio.run(run_command())
+            if result:
+                print("\n" + "─" * 50)
+                print(f"  RESULT (exit code: {result.get('exit_code', '?')})")
+                print("─" * 50)
+                if result.get('stdout'):
+                    print(result['stdout'])
+                if result.get('stderr'):
+                    print(f"[stderr]: {result['stderr']}")
+                if result.get('error'):
+                    print(f"[error]: {result['error']}")
+                print("─" * 50 + "\n")
+            else:
+                print("Error: command execution failed (no response)")
+        except Exception as e:
+            print(f"Error: {e}")
+        
         return True
