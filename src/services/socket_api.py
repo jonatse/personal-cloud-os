@@ -16,12 +16,12 @@ LOG_PATH = os.path.expanduser("~/.local/share/pcos/logs/socket_api.log")
 os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
 logging.basicConfig(
     level=logging.DEBUG,
-    format='%(asctime)s | v%(version)s | %(name)s | %(levelname)s | %(message)s',
+    format='%(asctime)s | %(name)s | %(levelname)s | %(message)s',
     handlers=[RotatingFileHandler(LOG_PATH, maxBytes=1_000_000, backupCount=3)]
 )
 logger = logging.getLogger("socket_api")
 
-SOCKET_PATH = "/run/pcos/messaging.sock"
+SOCKET_PATH = os.path.expanduser("~/.local/run/pcos/messaging.sock")
 
 class SocketAPI:
     """Unix socket API for PCOS control and diagnostics."""
@@ -49,7 +49,7 @@ class SocketAPI:
         os.chmod(SOCKET_PATH, stat.S_IRUSR | stat.S_IWUSR)
         
         self.running = True
-        logger.info(f"Socket API started at {SOCKET_PATH}")
+        logger.info(f"v{__version__} | Socket API started at {SOCKET_PATH}")
         
     async def stop(self):
         """Stop the socket API server."""
@@ -59,7 +59,7 @@ class SocketAPI:
             await self.server.wait_closed()
         if os.path.exists(SOCKET_PATH):
             os.unlink(SOCKET_PATH)
-        logger.info("Socket API stopped")
+        logger.info(f"v{__version__} | Socket API stopped")
         
     async def _handle_client(self, reader, writer):
         """Handle a client connection."""
