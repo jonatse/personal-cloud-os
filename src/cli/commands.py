@@ -21,6 +21,7 @@ class CommandHandler:
             'network': self.cmd_network,
             'device': self.cmd_device,
             'container': self.cmd_container,
+            'shell': self.cmd_shell,
             'start': self.cmd_start,
             'stop': self.cmd_stop,
             'restart': self.cmd_restart,
@@ -417,6 +418,73 @@ class CommandHandler:
             print("  Container manager not available.")
         
         print("─" * 50 + "\n")
+        return True
+    
+    def cmd_shell(self, args) -> bool:
+        """Open interactive Alpine Linux shell."""
+        import subprocess
+        import socket
+        import os
+        import sys
+        
+        print("\n" + "─" * 50)
+        print("  ALPINE LINUX SHELL")
+        print("─" * 50)
+        print("  Type 'exit' to return to PCOS CLI")
+        print("─" * 50 + "\n")
+        
+        socket_path = os.path.expanduser("~/.local/run/pcos/container.sock")
+        
+        if not os.path.exists(socket_path):
+            print("Container shell not available. Is PCOS running?")
+            return True
+        
+        # Try to use xterm or any available terminal
+        terminals = ['xterm', 'gnome-terminal', 'konsole', 'xfce4-terminal', 'lxterminal', 'kitty']
+        terminal = None
+        for t in terminals:
+            if subprocess.run(['which', t], capture_output=True).returncode == 0:
+                terminal = t
+                break
+        
+        if not terminal:
+            # Fallback: use script command for pseudo-terminal
+            try:
+                # Use 'script' to give us a PTY
+                proc = subprocess.Popen(
+                    ['script', '-q', '-c', f'nc -U {socket_path}', '/dev/null'],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT
+                )
+                # Relay input/output
+                import select
+                while True:
+                    r, _, _ = select.select([sys.stdin, proc.stdout], [], [], 0.1)
+                    if sys.stdin in r:
+                        data = sys.stdin.read(1)
+                        if not data:
+                            break
+                        proc.stdin.write(data.encode())
+                        proc.stdin.flush()
+                    if proc.stdout in r:
+                        sys.stdout.write(proc.stdout.read(1))
+                        sys.stdout.flush()
+                proc.terminate()
+            except Exception as e:
+                print(f"Could not open shell: {e}")
+                print("Alternative: run 'nc -U ~/.local/run/pcos/container.sock' in terminal")
+        else:
+            # Open terminal connected to shell socket
+            if terminal == 'xterm':
+                subprocess.run([terminal, '-e', f'socat - UNIX-CONNECT:{socket_path}'])
+            elif terminal == 'gnome-terminal':
+                subprocess.run([terminal, '--', 'bash', '-c', f'socat - UNIX-CONNECT:{socket_path}'])
+            elif terminal == 'kitty':
+                subprocess.run([terminal, '@', 'pipe', '--', f'nc -U {socket_path}'])
+            else:
+                subprocess.run([terminal, '-e', f'socat - UNIX-CONNECT:{socket_path}'])
+        
         return True
     
     def cmd_start(self, args) -> bool:
