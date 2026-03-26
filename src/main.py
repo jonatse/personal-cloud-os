@@ -42,6 +42,7 @@ import asyncio
 import logging
 import signal
 import argparse
+import sys
 
 from core.config import Config
 from core.events import Event, Events, event_bus
@@ -270,8 +271,52 @@ class PersonalCloudOS:
         loop.close()
 
 
+async def test_remote_command(peer_name: str, command: str):
+    """Test remote command execution - called via --test-remote flag."""
+    app = PersonalCloudOS()
+    await app.start()
+    
+    # Wait for peers
+    await asyncio.sleep(5)
+    
+    # Find peer
+    ret_service = app.reticulum_service
+    target_peer = None
+    for peer in ret_service.get_peers():
+        if peer.name == peer_name or peer_name in peer.id:
+            target_peer = peer
+            break
+    
+    if not target_peer:
+        print(f"Peer '{peer_name}' not found")
+        await app.stop()
+        return
+    
+    print(f"Executing '{command}' on {target_peer.name}...")
+    result = await ret_service.execute_command(target_peer.id, command)
+    
+    if result:
+        print(f"Exit code: {result.get('exit_code')}")
+        print(f"Output: {result.get('stdout')}")
+        if result.get('stderr'):
+            print(f"Error: {result.get('stderr')}")
+    else:
+        print("Command failed")
+    
+    await app.stop()
+
+
 def main():
     """Main entry point."""
+    
+    if "--test-remote" in sys.argv:
+        idx = sys.argv.index("--test-remote")
+        if len(sys.argv) > idx + 2:
+            peer = sys.argv[idx+1]
+            cmd = sys.argv[idx+2]
+            asyncio.run(test_remote_command(peer, cmd))
+            return
+    
     parser = argparse.ArgumentParser(description='Personal Cloud OS')
     parser.add_argument('--cli', action='store_true', help='Open CLI interface')
     parser.add_argument('--tray', action='store_true', help='Run with system tray')
