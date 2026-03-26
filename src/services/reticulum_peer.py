@@ -275,7 +275,9 @@ class ReticulumPeerService:
                 "stdout": result.stdout[:4096],  # Limit output size
                 "stderr": result.stderr[:4096],
             }
-            return json.dumps(response).encode()
+            response_bytes = json.dumps(response).encode()
+            logger.debug(f"v{__version__} Command handler returning: {response_bytes[:50]}...")
+            return response_bytes
 
         except subprocess.TimeoutExpired:
             logger.error(f"v{__version__} Command timed out: {command}")
@@ -443,13 +445,18 @@ class ReticulumPeerService:
         future = asyncio.Future()
         
         def _on_response(receipt):
+            logger.debug(f"execute_command: callback called, receipt={receipt}, response={receipt.response}")
+            logger.debug(f"execute_command: response type={type(receipt.response)}")
             if not future.done():
                 try:
-                    # RNS passes RequestReceipt, response is in receipt.response
-                    response_data = receipt.response if hasattr(receipt, 'response') else None
+                    # Handle both bytes and string responses
+                    response_data = receipt.response
+                    if isinstance(response_data, bytes):
+                        response_data = response_data.decode('utf-8')
                     result = json.loads(response_data) if response_data else {}
                     future.set_result(result)
                 except Exception as exc:
+                    logger.error(f"execute_command: callback error: {exc}")
                     future.set_exception(exc)
         
         def _on_failed():
@@ -489,6 +496,7 @@ class ReticulumPeerService:
         try:
             return await asyncio.wait_for(future, timeout=timeout + 5)
         except asyncio.TimeoutError:
+            logger.debug(f"execute_command: wait_for result, timeout exception")
             logger.warning(f"execute_command: command timed out after {timeout}s")
             return None
         except Exception as exc:
