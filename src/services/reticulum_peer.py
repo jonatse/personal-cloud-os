@@ -442,10 +442,12 @@ class ReticulumPeerService:
         # Send the command request
         future = asyncio.Future()
         
-        def _on_response(response):
+        def _on_response(receipt):
             if not future.done():
                 try:
-                    result = json.loads(response) if response else {}
+                    # RNS passes RequestReceipt, response is in receipt.response
+                    response_data = receipt.response if hasattr(receipt, 'response') else None
+                    result = json.loads(response_data) if response_data else {}
                     future.set_result(result)
                 except Exception as exc:
                     future.set_exception(exc)
@@ -467,6 +469,18 @@ class ReticulumPeerService:
         )
 
         logger.debug(f"execute_command: request sent, waiting for response...")
+
+        # Monitor the request receipt
+        import threading
+        def monitor_receipt():
+            import time
+            for _ in range(int(timeout)):
+                time.sleep(1)
+                if future.done():
+                    break
+                logger.debug(f"execute_command: receipt status = {receipt.get_status() if hasattr(receipt, 'get_status') else 'unknown'}")
+
+        threading.Thread(target=monitor_receipt, daemon=True).start()
 
         if receipt is False:
             logger.error(f"execute_command: link.request returned False")
