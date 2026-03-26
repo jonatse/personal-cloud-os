@@ -113,6 +113,8 @@ class SocketAPI:
             return await self._get_circle(request)
         elif cmd == "link":
             return await self._get_link(request)
+        elif cmd == "container_exec":
+            return await self._container_execute(request)
         elif cmd == "service_start":
             return await self._service_start(request)
         elif cmd == "service_stop":
@@ -303,9 +305,15 @@ class SocketAPI:
         
         try:
             container = self.app.container_manager
+            info = await container.get_info()
             return {
+                "id": container.container_id,
+                "name": info.name,
+                "state": container.get_state().value,
                 "running": container.is_running(),
-                "ssh_port": 2222 if container.is_running() else None
+                "rootfs": container.rootfs_path,
+                "data": container.data_path,
+                "version": info.version
             }
         except Exception as e:
             return {"error": str(e)}
@@ -553,6 +561,33 @@ class SocketAPI:
             return start_resp
         
         return {"status": "restarted", "service": service}
+
+
+    async def _container_execute(self, request):
+        """Execute command in container."""
+        if not self.app or not hasattr(self.app, 'container_manager'):
+            return {"error": "container_manager_not_available"}
+        
+        if not self.app.container_manager.is_running():
+            return {"error": "container_not_running"}
+        
+        command = request.get("command", "")
+        if not command:
+            return {"error": "missing_command"}
+        
+        try:
+            container = self.app.container_manager
+            stdout, stderr, exit_code = await container.execute(
+                [command],
+                timeout=request.get("timeout", 30)
+            )
+            return {
+                "exit_code": exit_code,
+                "stdout": stdout,
+                "stderr": stderr
+            }
+        except Exception as e:
+            return {"error": str(e)}
 
 
 async def main():

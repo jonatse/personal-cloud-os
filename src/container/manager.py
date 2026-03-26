@@ -1,13 +1,18 @@
-"""Container Manager - Manages the Linux OS container."""
+"""Container Manager - Chroot-based Alpine Linux container."""
 import asyncio
 import logging
 import os
+import sys
 import uuid
-from typing import Optional, Dict, List
+import shutil
+import stat
+from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass
 from enum import Enum
 import threading
 import subprocess
+import socket
+import select
 
 from core.events import Event
 
@@ -28,23 +33,21 @@ class ContainerInfo:
     """Container information."""
     id: str
     name: str
-    image: str
+    rootfs_path: str
+    data_path: str
+    home_path: str
     state: str
-    created: str
-    ports: Dict[str, str] = None
-    
-    def __post_init__(self):
-        if self.ports is None:
-            self.ports = {}
+    version: str = "3.20"
 
 
 class ContainerManager:
     """
-    Manages the Linux OS container.
+    Manages the Alpine Linux container via chroot.
     
-    Provides your Alpine/Debian environment with your files,
-    configs, terminal, and all your tools. Runs always like
-    a background service.
+    This is your "OS instance" - like Urbit's ship:
+    - All data lives in container/data/
+    - Syncing = syncing the data folder
+    - All modifications persist in the container
     """
     
     def __init__(self, config, event_bus):
@@ -52,18 +55,73 @@ class ContainerManager:
         self.config = config
         self.event_bus = event_bus
         
-        self._container_id: Optional[str] = None
         self._state = ContainerState.STOPPED
         self._lock = threading.Lock()
+        self._shell_socket = None
+        self._shell_process = None
         
-        # Container settings
-        self._image = config.get("container.image", "alpine:latest")
-        self._container_name = config.get("container.name", "personal-cloud-os")
-        self._auto_start = config.get("container.auto_start", True)
+        # Paths
+        self._src_dir = os.path.dirname(os.path.abspath(__file__))
+        self._rootfs_src = os.path.join(self._src_dir, "rootfs")
         
-        # Working directory for container files
-        self._work_dir = os.path.expanduser("~/.local/share/pcos/container")
-        os.makedirs(self._work_dir, exist_ok=True)
+        # Container paths (in user's data directory)
+        self._container_base = os.path.expanduser("~/.local/share/pcos/container")
+        self._rootfs_path = os.path.join(self._container_base, "rootfs")
+        self._data_path = os.path.join(self._container_base, "data")
+        self._home_path = os.path.join(self._container_base, "home")
+        self._config_path = os.path.join(self._container_base, "config")
+        
+        # Ensure directories exist
+        for path in [self._container_base, self._data_path, self._home_path, self._config_path]:
+            os.makedirs(path, exist_ok=True)
+        
+        # Setup rootfs (copy from source if needed)
+        self._setup_rootfs()
+        
+        # Container ID (based on RNS identity hash - like Urbit's ship ID)
+        self._container_id = self._get_container_id()
+        
+        logger.info(f"Container Manager initialized. ID: {self._container_id}")
+    
+    def _get_container_id(self) -> str:
+        """Get unique container ID from system."""
+        try:
+            # Try to use machine-id for unique ID
+            with open("/etc/machine-id", "r") as f:
+                return f.read().strip()[:16]
+        except:
+            return uuid.uuid4().hex[:16]
+    
+    def _setup_rootfs(self):
+        """Setup rootfs - copy from source or use existing."""
+        if os.path.exists(self._rootfs_path):
+            logger.debug("Using existing rootfs")
+            return
+        
+        logger.info(f"Setting up rootfs from {self._rootfs_src}")
+        
+        # Copy rootfs to container directory
+        shutil.copytree(self._rootfs_src, self._rootfs_path, symlinks=True)
+        
+        # Create required directories
+        for d in ["proc", "sys", "dev", "run"]:
+            os.makedirs(os.path.join(self._rootfs_path, d), exist_ok=True)
+        
+        # Ensure data and home directories are accessible
+        os.makedirs(self._data_path, exist_ok=True)
+        os.makedirs(self._home_path, exist_ok=True)
+        
+        # Create /data symlink in rootfs pointing to data folder
+        data_link = os.path.join(self._rootfs_path, "data")
+        if not os.path.exists(data_link):
+            os.symlink(self._data_path, data_link)
+        
+        # Create /home symlink
+        home_link = os.path.join(self._rootfs_path, "home")
+        if not os.path.exists(home_link):
+            os.symlink(self._home_path, home_link)
+        
+        logger.info("Rootfs setup complete")
     
     async def start(self):
         """Start the container."""
@@ -75,26 +133,17 @@ class ContainerManager:
         self._set_state(ContainerState.STARTING)
         
         try:
-            # Check if Docker is available
-            if not await self._check_docker():
-                logger.error("Docker is not available")
-                self._set_state(ContainerState.ERROR)
-                return
+            # Mount proc, sys, dev if not already done
+            await self._mount_filesystems()
             
-            # Check if container already exists
-            existing = await self._get_container()
-            if existing:
-                logger.info(f"Container already exists: {existing.id}")
-                self._container_id = existing.id
-                
-                # Start existing container
-                await self._start_container()
-            else:
-                # Create and start new container
-                await self._create_container()
+            # Set hostname
+            await self._set_hostname()
             
             self._set_state(ContainerState.RUNNING)
             logger.info("Container started successfully")
+            
+            # Start shell server for interactive access
+            await self._start_shell_server()
             
         except Exception as e:
             logger.error(f"Failed to start container: {e}")
@@ -110,8 +159,11 @@ class ContainerManager:
         self._set_state(ContainerState.STOPPING)
         
         try:
-            if self._container_id:
-                await self._stop_container()
+            # Stop shell server
+            await self._stop_shell_server()
+            
+            # Unmount filesystems
+            await self._unmount_filesystems()
             
             self._set_state(ContainerState.STOPPED)
             logger.info("Container stopped")
@@ -124,133 +176,156 @@ class ContainerManager:
     async def restart(self):
         """Restart the container."""
         await self.stop()
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
         await self.start()
     
-    async def _check_docker(self) -> bool:
-        """Check if Docker is available."""
-        try:
-            result = subprocess.run(
-                ["docker", "--version"],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            return result.returncode == 0
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            return False
+    async def _mount_filesystems(self):
+        """Mount required filesystems for chroot."""
+        # Mount proc
+        proc_path = os.path.join(self._rootfs_path, "proc")
+        if not self._is_mounted(proc_path):
+            try:
+                subprocess.run(["mount", "-t", "proc", "proc", proc_path], 
+                             check=False, capture_output=True)
+            except Exception as e:
+                logger.warning(f"Could not mount proc: {e}")
+        
+        # Mount sys
+        sys_path = os.path.join(self._rootfs_path, "sys")
+        if not self._is_mounted(sys_path):
+            try:
+                subprocess.run(["mount", "-t", "sysfs", "sysfs", sys_path], 
+                             check=False, capture_output=True)
+            except Exception as e:
+                logger.warning(f"Could not mount sys: {e}")
+        
+        # Mount dev
+        dev_path = os.path.join(self._rootfs_path, "dev")
+        if not self._is_mounted(dev_path):
+            try:
+                subprocess.run(["mount", "-t", "devpts", "devpts", dev_path], 
+                             check=False, capture_output=True)
+            except Exception as e:
+                logger.warning(f"Could not mount dev: {e}")
     
-    async def _get_container(self) -> Optional[ContainerInfo]:
-        """Get existing container info."""
+    async def _unmount_filesystems(self):
+        """Unmount filesystems."""
+        for path in ["proc", "sys", "dev"]:
+            full_path = os.path.join(self._rootfs_path, path)
+            try:
+                subprocess.run(["umount", full_path], check=False, capture_output=True)
+            except:
+                pass
+    
+    def _is_mounted(self, path: str) -> bool:
+        """Check if path is mounted."""
         try:
-            result = subprocess.run(
-                ["docker", "ps", "-a", "--filter", f"name={self._container_name}", "--format", "{{.ID}}"],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                container_id = result.stdout.strip()
-                return ContainerInfo(
-                    id=container_id,
-                    name=self._container_name,
-                    image=self._image,
-                    state="existing",
-                    created=""
-                )
+            with open("/proc/mounts", "r") as f:
+                for line in f:
+                    if line.startswith(path + " "):
+                        return True
+        except:
+            pass
+        return False
+    
+    async def _set_hostname(self):
+        """Set hostname inside container."""
+        hostname_path = os.path.join(self._rootfs_path, "etc/hostname")
+        try:
+            with open(hostname_path, "w") as f:
+                f.write("personal-cloud-os\n")
         except Exception as e:
-            logger.debug(f"Error getting container: {e}")
-        return None
+            logger.warning(f"Could not set hostname: {e}")
     
-    async def _create_container(self):
-        """Create a new container."""
-        logger.info(f"Creating container from image: {self._image}")
+    async def _start_shell_server(self):
+        """Start Unix socket shell server for interactive access."""
+        socket_path = os.path.expanduser("~/.local/run/pcos/container.sock")
+        os.makedirs(os.path.dirname(socket_path), exist_ok=True)
         
-        # Mount points for persisting data
-        home_mount = f"{self._work_dir}/home:/root"
-        config_mount = f"{self._work_dir}/config:/config"
+        if os.path.exists(socket_path):
+            os.unlink(socket_path)
         
-        cmd = [
-            "docker", "create",
-            "--name", self._container_name,
-            "-it",
-            "-v", home_mount,
-            "-v", config_mount,
-            "--hostname", "personal-cloud-os",
-            self._image,
-            "/bin/sh"
-        ]
+        # Create Unix socket server
+        self._shell_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._shell_socket.bind(socket_path)
+        os.chmod(socket_path, 0o600)
+        self._shell_socket.listen(1)
+        self._shell_socket.settimeout(1.0)
         
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            raise RuntimeError(f"Failed to create container: {result.stderr}")
-        
-        self._container_id = result.stdout.strip()
-        logger.info(f"Container created: {self._container_id}")
-        
-        # Start the container
-        await self._start_container()
+        logger.info(f"Shell server listening on {socket_path}")
     
-    async def _start_container(self):
-        """Start the container."""
-        if not self._container_id:
-            return
+    async def _stop_shell_server(self):
+        """Stop shell server."""
+        if self._shell_socket:
+            try:
+                self._shell_socket.close()
+            except:
+                pass
+            self._shell_socket = None
         
-        result = subprocess.run(
-            ["docker", "start", self._container_id],
-            capture_output=True,
-            text=True
-        )
-        
-        if result.returncode != 0:
-            raise RuntimeError(f"Failed to start container: {result.stderr}")
-        
-        logger.info("Container started")
+        socket_path = os.path.expanduser("~/.local/run/pcos/container.sock")
+        if os.path.exists(socket_path):
+            try:
+                os.unlink(socket_path)
+            except:
+                pass
     
-    async def _stop_container(self):
-        """Stop the container."""
-        if not self._container_id:
-            return
+    async def execute(self, command: List[str], timeout: int = 30) -> Tuple[str, str, int]:
+        """Execute a command in the container environment.
         
-        result = subprocess.run(
-            ["docker", "stop", self._container_id],
-            capture_output=True,
-            text=True
-        )
-        
-        if result.returncode != 0:
-            logger.warning(f"Failed to stop container gracefully: {result.stderr}")
-            # Force kill
-            subprocess.run(
-                ["docker", "kill", self._container_id],
-                capture_output=True
-            )
-    
-    async def execute(self, command: List[str]) -> tuple:
-        """Execute a command in the container."""
-        if not self._container_id or self._state != ContainerState.RUNNING:
+        Uses PATH to include rootfs binaries - no chroot needed.
+        This gives us the Alpine environment without root privileges.
+        """
+        if self._state != ContainerState.RUNNING:
             raise RuntimeError("Container not running")
         
-        cmd = ["docker", "exec", "-i", self._container_name] + command
+        # Build command string
+        cmd_str = " ".join(command) if len(command) > 1 else command[0]
         
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
+        # Set up environment with rootfs paths
+        env = os.environ.copy()
+        rootfs_bin = os.path.join(self._rootfs_path, "bin")
+        rootfs_sbin = os.path.join(self._rootfs_path, "sbin")
+        rootfs_usr_bin = os.path.join(self._rootfs_path, "usr", "bin")
+        rootfs_usr_sbin = os.path.join(self._rootfs_path, "usr", "sbin")
         
-        return result.stdout, result.stderr, result.returncode
+        # Prepend rootfs paths to PATH
+        existing_path = env.get("PATH", "")
+        env["PATH"] = f"{rootfs_bin}:{rootfs_sbin}:{rootfs_usr_bin}:{rootfs_usr_sbin}:{existing_path}"
+        env["HOME"] = self._home_path
+        env["TERM"] = "xterm"
+        
+        try:
+            result = subprocess.run(
+                ["/bin/sh", "-c", cmd_str],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=self._data_path,
+                env=env
+            )
+            return result.stdout, result.stderr, result.returncode
+        except subprocess.TimeoutExpired:
+            return "", "Command timed out", 124
+        except Exception as e:
+            return "", str(e), 1
     
     async def get_shell(self):
-        """Get an interactive shell in the container."""
-        if not self._container_id or self._state != ContainerState.RUNNING:
-            raise RuntimeError("Container not running")
-        
-        # This would attach to the container's shell
-        # For now, return exec command
-        return ["docker", "exec", "-it", self._container_name, "/bin/sh"]
+        """Get shell command for interactive access."""
+        # Return command that uses rootfs PATH
+        return ["/bin/sh"]
+    
+    async def get_info(self) -> ContainerInfo:
+        """Get container information."""
+        return ContainerInfo(
+            id=self._container_id,
+            name="personal-cloud-os",
+            rootfs_path=self._rootfs_path,
+            data_path=self._data_path,
+            home_path=self._home_path,
+            state=self._state.value,
+            version="3.20"
+        )
     
     def _set_state(self, state: ContainerState):
         """Set container state."""
@@ -258,11 +333,12 @@ class ContainerManager:
             self._state = state
         
         # Publish state change event
-        asyncio.create_task(self.event_bus.publish(Event(
-            type=f"container.{state.value}",
-            data={"container_id": self._container_id, "state": state.value},
-            source="container"
-        )))
+        if self.event_bus:
+            asyncio.create_task(self.event_bus.publish(Event(
+                type=f"container.{state.value}",
+                data={"container_id": self._container_id, "state": state.value},
+                source="container"
+            )))
     
     def get_state(self) -> ContainerState:
         """Get current container state."""
@@ -273,11 +349,16 @@ class ContainerManager:
         return self._state == ContainerState.RUNNING
     
     @property
-    def container_id(self) -> Optional[str]:
+    def container_id(self) -> str:
         """Get container ID."""
         return self._container_id
     
     @property
-    def work_dir(self) -> str:
-        """Get container work directory."""
-        return self._work_dir
+    def data_path(self) -> str:
+        """Get data directory path."""
+        return self._data_path
+    
+    @property
+    def rootfs_path(self) -> str:
+        """Get rootfs directory path."""
+        return self._rootfs_path

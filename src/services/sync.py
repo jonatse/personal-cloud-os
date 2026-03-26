@@ -134,7 +134,8 @@ class SyncEngine:
         self._index_id  = _load_index_id(
             os.path.expanduser("~/.local/share/pcos"))
 
-        self._sync_dir      = os.path.expanduser("~/Sync")
+        # Use container data directory for sync (not visible outside app)
+        self._sync_dir = os.path.expanduser("~/.local/share/pcos/container/data")
         self._sync_interval = config.get("sync.sync_interval", 60)
         os.makedirs(self._sync_dir, exist_ok=True)
 
