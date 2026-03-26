@@ -589,9 +589,17 @@ class CommandHandler:
         loop = getattr(self.app, '_loop', None)
         if loop and loop.is_running():
             # Schedule the stop on the event loop
-            # Use call_soon_threadsafe for reliable scheduling
-            import asyncio
-            loop.call_soon_threadsafe(lambda: asyncio.create_task(self.app.stop()))
+            # call_soon_threadsafe is safe to call from any thread
+            async def stop_app():
+                await self.app.stop()
+            
+            # Create a callback that runs the coroutine in the event loop
+            def run_stop():
+                if loop.is_running():
+                    asyncio.run_coroutine_threadsafe(stop_app(), loop).result()
+            
+            loop.call_soon_threadsafe(run_stop)
+            
             # Also stop the CLI interface so it exits
             cli_interface = getattr(self.app, 'cli_interface', None)
             if cli_interface:
