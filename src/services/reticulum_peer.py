@@ -417,9 +417,12 @@ class ReticulumPeerService:
             logger.error(f"execute_command: failed to create link to {peer_id[:16]}...")
             return None
         
+        logger.debug(f"execute_command: created link to {peer_id[:16]}...")
+        
         # Wait for link to become active
         for _ in range(20):  # 10 seconds max wait
             await asyncio.sleep(0.5)
+            logger.debug(f"execute_command: link status = {link.status}")
             if link.status == RNS.Link.ACTIVE:
                 break
             elif link.status in (RNS.Link.CLOSED, RNS.Link.STALE):
@@ -433,6 +436,8 @@ class ReticulumPeerService:
             except:
                 pass
             return None
+        
+        logger.debug(f"execute_command: link active, RTT = {link.rtt}")
         
         # Send the command request
         future = asyncio.Future()
@@ -451,6 +456,8 @@ class ReticulumPeerService:
         
         request_data = json.dumps({"cmd": command}).encode()
         
+        logger.debug(f"execute_command: sending command '{command[:50]}...' to {peer_id[:16]}...")
+        
         receipt = link.request(
             PATH_CMD_EXECUTE,
             data=request_data,
@@ -458,7 +465,9 @@ class ReticulumPeerService:
             failed_callback=_on_failed,
             timeout=timeout,
         )
-        
+
+        logger.debug(f"execute_command: request sent, waiting for response...")
+
         if receipt is False:
             logger.error(f"execute_command: link.request returned False")
             return None
