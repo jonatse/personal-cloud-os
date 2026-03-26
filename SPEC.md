@@ -870,3 +870,212 @@ Always-on nodes with significant hardware (GPU, RAM) can offer compute:
 - Any peer can request a GPU task, result returned over encrypted link
 - No AWS, no cloud accounts — the mesh IS the cloud
 - Node owners set their own terms for resource sharing
+
+---
+
+## Future Architecture: Two-Layer Model
+
+### Vision (as of 2026-03-26)
+
+A decentralized, encrypted operating system that runs as a second layer over any host OS, with blockchain for state synchronization.
+
+### Layer 1: PCOS Host Layer
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Layer 1: Host OS (any Linux distro, Alpine, Debian, etc)│
+│  - PCOS App runs as a background service                   │
+│  - Establishes RNS mesh networking                          │
+│  - Manages identities (user, circles)                       │
+│  - Hardware resource sharing (GPU, storage)                │
+│  - Provides encrypted partition to Layer 2                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Current state:** ✓ Implemented in v1.3.x
+- RNS networking works
+- Identity management works  
+- File sync works
+
+### Layer 2: Guest OS (Encrypted Container)
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Layer 2: Guest OS (Alpine Linux + busybox + musl)         │
+│  - Encrypted, invisible to host OS                         │
+│  - Sees hardware directly (GPU passthrough)                 │
+│  - Runs like any native app to user                         │
+│  - State synced via blockchain + RNS                       │
+│  - Shared across all user's devices as one virtual OS       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Current state:** ▼ Not implemented
+- Alpine rootfs bundled in repo (✓)
+- Shell access works (✓)
+- Not encrypted (TODO)
+- Not invisible to host (TODO)
+- GPU passthrough (TODO)
+
+### State Synchronization Options
+
+The goal is to keep all devices in sync with the same OS state. Blockchain is ONE way to do this, but there are others:
+
+#### Option 1: Direct Sync (Current)
+- Devices sync files/state directly via RNS
+- Simple, works for file sync already
+- May not handle complex state (running processes, etc)
+
+#### Option 2: CRDT (Conflict-free Replicated Data Types)
+- Data structures that auto-merge across devices
+- Used by real-time apps (Google Docs, etc)
+- No blockchain needed
+
+#### Option 3: IPFS + Local State
+- IPFS for content-addressed data
+- Local state database synced as files
+- Proven approach
+
+#### Option 4: Light Blockchain
+- Minimal chain for state commit history
+- Not for currency, just for ordering
+- IOTA, Temporal, or custom
+
+#### Option 5: Centralized (Not Preferred)
+- One device as "master" - goes against decentralization goal
+
+### Decision: EXPLORE, NOT DECIDED
+
+We will try the simplest approach first (direct sync) and only add complexity if needed.
+
+### The Real Challenge
+
+The goal isn't just "invisible to host OS" - that's encryption (solved problem).
+
+The REAL challenge is:
+
+1. **State Persistence**
+   - OS state must survive device restarts
+   - Must live in RNS mesh, not on any single device
+   - When you start PCOS with 1 device, it loads your OS from the mesh
+
+2. **Zero-Config Mirroring** 
+   - Connect second device = it automatically shows the same OS state
+   - Like plugging in a second monitor
+   - No setup, no pairing, just works
+
+3. Device-Specific Optimization
+   - Same OS state, but adapts to screen size, GPU, etc.
+   - Phone vs Desktop vs Tablet - different views of same state
+
+4. Why UI Matters
+   - CLI/Terminal = SAME everywhere = easiest to mirror
+   - GUI = needs adaptation per device
+   - Hybrid approach: CLI-base + optional GUI layer
+   - "Universal terminal" as the common denominator
+
+### Implications for Design
+
+- Terminal-first architecture (everything accessible via CLI)
+- State stored in mesh (RNS), not local filesystem  
+- Guest OS boots FROM the mesh, not from local disk
+- Second device connects to mesh, gets current state automatically
+
+### Options Analysis
+
+Given the requirements (state in mesh, boot from mesh, auto-mirror, CLI-first), here are the options:
+
+---
+
+#### 1. How to Store State in Mesh?
+
+| Option | How It Works | Pros | Cons |
+|--------|--------------|------|------|
+| **A. RNS File Sync** | SQLite + RNS transfer | Simple, works now | No ordering guarantee |
+| **B. IPFS** | Content-addressed storage | Proven, deduplication | Extra dependency |
+| **C. Custom RNS State** | Store state in RNS packets | Built into our network | Limited size |
+| **D. State Provider** | One device holds state, others query | Simple | Not fully decentralized |
+
+**Recommendation:** Start with A (current), move to D if needed
+
+---
+
+#### 2. How to Boot from Mesh with 1 Device?
+
+| Option | How It Works | Pros | Cons |
+|--------|--------------|------|------|
+| **A. Last-Writer-Wins** | Most recent state wins | Simple | Can lose updates |
+| **B. Primary Device** | One device is "source of truth" | Clear ordering | Not decentralized |
+| **C. Vector Clocks** | Track causality, merge | Proper sync | Complex |
+| **D. Raft/Paxos** | Consensus algorithm | Strong consistency | Heavy for mesh |
+
+**Recommendation:** Start with A, add C if conflicts become problem
+
+---
+
+#### 3. How to Auto-Mirror (Second Device)?
+
+| Option | How It Works | Pros | Cons |
+|--------|--------------|------|------|
+| **A. RNS Broadcast** | Announce + state push | Built into network | Not real-time |
+| **B. Persistent Links** | All devices maintain connections | Real-time sync | Complexity |
+| **C. Session Server** | One device runs "display server" | Simple mirroring | Device dependent |
+| **D. State Subscription** | Devices subscribe to state changes | Clean separation | Need state server |
+
+**Recommendation:** Start with C (one device is display server), evolve to D
+
+---
+
+#### 4. Guest OS Options (Layer 2)
+
+| Option | How It Works | Pros | Cons |
+|--------|--------------|------|------|
+| **A. chroot + PATH** | Current approach | No root needed | Not isolated |
+| **B. systemd-nspawn** | Container with namespaces | Better isolation | Needs systemd |
+| **C. Firecracker** | MicroVM (AWS VMC) | Strong isolation | Heavy |
+| **D. AppImage** | Self-contained executable | Portable | Not a true VM |
+
+**Recommendation:** Start with A (works now), move to B when possible, D for final product
+
+---
+
+#### 5. UI Options (for device adaptation)
+
+| Option | How It Works | Pros | Cons |
+|--------|--------------|------|------|
+| **A. CLI/Terminal** | Text-based, always same | Easy mirroring | Not graphical |
+| **B. Terminal GUI** | ncurses, text UIs | Better UX, same everywhere | Limited |
+| **C. Web Interface** | Browser connects to socket | Cross-platform | Not native |
+| **D. Progressive Web App** | PWA that adapts | Native-like, flexible | More work |
+
+**Recommendation:** A+B first (CLI-first), add C for convenience, D for final
+
+---
+
+### Summary: Recommended Path
+
+1. **State:** RNS file sync + simple last-writer-wins
+2. **Boot:** One device holds state, others fetch
+3. **Mirror:** Session-based (one device shows, others connect)
+4. **Guest:** chroot now, AppImage for product
+5. **UI:** Terminal-first, web for convenience
+
+Complex solutions (blockchain, Raft, IPFS) only if simpler ones don't work.
+
+### Phased Roadmap
+
+| Phase | Focus | Status | Notes |
+|-------|-------|--------|-------|
+| 1 | Foundation (RNS, sync, identities) | ✓ Done | Networking, file sync work |
+| 2 | State Persistence in Mesh | TODO | OS state lives in RNS, not local |
+| 3 | Single-Device Boot from Mesh | TODO | Start PCOS = load state from mesh |
+| 4 | Auto-Mirror on Second Device | TODO | Zero-config display mirroring |
+| 5 | Encrypted Container | TODO | Invisible to host (final goal) |
+| 6 | GPU/Hardware Passthrough | TODO | Guest sees real hardware |
+| 7 | Device Optimization | TODO | Same state, adapted views |
+
+Note: We will NOT add blockchain unless simpler approaches (direct sync, CRDT) prove insufficient.
+
+---
+
+*Last updated: 2026-03-26*
