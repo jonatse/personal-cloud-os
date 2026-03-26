@@ -52,6 +52,7 @@ from core.version import __version__, __app_name__
 from services.reticulum_peer import ReticulumPeerService
 from services.i2p_manager import I2PManager
 from services.sync import SyncEngine
+from services.socket_api import SocketAPI
 from container.manager import ContainerManager
 from cli.interface import CLIInterface
 
@@ -109,6 +110,13 @@ class PersonalCloudOS:
         
         # Initialize container manager
         self.container_manager = ContainerManager(self.config, event_bus)
+        
+        # Socket API for container control and diagnostics
+        self.socket_api = SocketAPI(
+            reticulum_service=None,  # Will be set after services start
+            sync_service=None,
+            event_bus=event_bus
+        )
         
         # Setup signal handlers
         self._setup_signals()
@@ -171,6 +179,15 @@ class PersonalCloudOS:
         except Exception as e:
             logger.error(f"Failed to start sync engine: {e}")
         
+        # Start socket API for control interface
+        try:
+            # Set the services after they've been created
+            self.socket_api.reticulum_service = self.reticulum_service
+            self.socket_api.sync_service = self.sync_engine
+            await self.socket_api.start()
+        except Exception as e:
+            logger.error(f"Failed to start socket API: {e}")
+        
         logger.info("All services started!")
         
         # Publish status
@@ -218,6 +235,12 @@ class PersonalCloudOS:
             await self.container_manager.stop()
         except Exception as e:
             logger.error(f"Error stopping container: {e}")
+        
+        # Stop socket API
+        try:
+            await self.socket_api.stop()
+        except Exception as e:
+            logger.error(f"Error stopping socket API: {e}")
         
         logger.info("All services stopped!")
     
