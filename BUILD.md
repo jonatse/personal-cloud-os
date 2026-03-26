@@ -11,6 +11,7 @@ able to follow this guide and produce an identical result.
 | Artifact | Location | Built on | Frequency |
 |----------|----------|----------|-----------|
 | `src/bin/i2pd` | Committed to repo | Ubuntu 22.04 (Jammy) | Once, or when updating i2pd |
+| `src/container/rootfs/` | src/container/rootfs/ | Bundled in repo | Never (committed) |
 | `dist/pcos/` | Gitignored, built locally | Any supported Linux | Each release |
 
 Everything else (`src/vendor/`, app Python code) is committed as-is
@@ -28,6 +29,20 @@ and requires no build step.
 >
 > Our minimum baseline is **Ubuntu 22.04 LTS (Jammy, glibc 2.35)**.
 > Use the laptop (Pop!_OS 22.04) as the build machine for binaries.
+
+---
+
+## Alpine Rootfs (Bundled)
+
+The Alpine Linux rootfs is now bundled in the repository at `src/container/rootfs/`.
+This is ~8MB and contains:
+- busybox (all Unix tools in one binary)
+- musl libc
+- apk package manager
+- Basic Alpine structure
+
+No build step needed - it's committed directly to the repo and copied to
+~/.local/share/pcos/container/rootfs/ on first run.
 
 ---
 

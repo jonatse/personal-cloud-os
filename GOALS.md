@@ -1,6 +1,6 @@
 # Personal Cloud OS — Goals & Priority Tracking
 
-Last updated: 2026-03-26
+Last updated: 2026-03-26 (today)
 
 This file tracks what is being worked on, what is done, and what comes next.
 It is the sprint board. SPEC.md is the design document.
@@ -9,12 +9,11 @@ It is the sprint board. SPEC.md is the design document.
 
 ## Current State (as of 2026-03-26)
 
-The system boots, joins the LAN via Reticulum, discovers peers, syncs files,
-shows everything in a live curses CLI, and includes an Identity & Trust System
-for access control. Two devices (debian desktop + pop-osmark laptop) are 
-discovering each other and syncing files successfully! Unix socket API working
-for container control, remote command execution working via socket at 
-~/.local/run/pcos/messaging.sock.
+PCOS v1.3.20 deployed to desktop and laptop devices. Alpine Linux container 
+bundled in repo at container/alpine/. Socket API working for container control
+via ~/.local/run/pcos/messaging.sock. Interactive shell available via container
+socket. Sync directory moved to ~/.local/share/pcos/container/data/. RNS-based
+mesh networking operational, peer discovery and file sync working between devices.
 
 ---
 
@@ -24,18 +23,31 @@ These are confirmed bugs in the current codebase:
 
 | # | Bug | File | Line | Severity |
 |---|-----|------|------|----------|
-| B1 | ReticulumPeerService.stop() has inverted guard | services/reticulum_peer.py | 149 | High |
-| B2 | ReticulumPeer.destination stores Identity not Destination | services/reticulum_peer.py | 303 | High |
-| B3 | get_link() always returns None | services/peer_link.py | 376 | High |
-| B4 | _on_link_closed mutates dict during iteration | services/peer_link.py | 264 | High |
-| B5 | List not imported in peer_link.py | services/peer_link.py | 64 | High |
-| B6 | _signal_handler calls asyncio.create_task() from sync | main.py | 92 | High |
 | B7 | ContainerManager._set_state() calls asyncio.create_task() | container/manager.py | 261 | High |
-| B8 | OutputRedirect.fileno() closure bug | cli/interface.py | ~398 | Medium | Resolved (no evidence of bug in current code) |
 | B9 | cmd_quit does not stop background services | cli/commands.py | 299 | Medium |
-| B10 | setup_logging level parameter has no effect | core/logger.py | — | Low |
 | B11 | File chunk reassembly broken | services/sync.py | 414 | Medium |
 | B12 | asyncio.create_task() in Tkinter context | ui/launcher.py | 423 | Medium |
+
+---
+
+## Roadmap
+
+| Phase | Focus | Status |
+|-------|-------|--------|
+| 1 | Foundation (RNS, sync, identities) | ✓ Done |
+| 2 | State Persistence in Mesh | TODO |
+| 3 | Single-Device Boot from Mesh | TODO |
+| 4 | Auto-Mirror on Second Device | TODO |
+| 5 | Encrypted Container | TODO |
+| 6 | GPU/Hardware Passthrough | TODO |
+| 7 | Device Optimization | TODO |
+
+---
+
+## Current Priorities
+
+- Phase 2: State persistence in mesh
+- Research: Options analysis in SPEC.md
 
 ---
 

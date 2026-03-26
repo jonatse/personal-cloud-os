@@ -12,10 +12,12 @@ A self-contained, offline-first personal cloud that syncs files across your devi
 | LAN peer discovery | Working |
 | File sync between devices | Working |
 | Persistent device identity | Working |
-| Curses CLI (split-screen) | Working |
+| Curses CLI (has issues in non-interactive mode) | Working |
 | Identity-based access control | Working |
 | Remote command execution (via Unix socket) | Working |
 | Socket API for container control | Working |
+| Alpine Linux container | Working |
+| Interactive shell | Working |
 
 ---
 
@@ -33,6 +35,11 @@ APPLICATION LAYER (PCOS):
   • Same identity = full access (your devices)
   • Circle identity = limited access (friends)
   • Unknown = minimal/no access
+
+CONTAINER LAYER:
+  • Alpine Linux bundled rootfs
+  • Shell access via ~/.local/run/pcos/container.sock
+  • Control API via ~/.local/run/pcos/messaging.sock
 ```
 
 ---
@@ -225,3 +232,39 @@ See GOALS.md for full priority list. Current focus: Priority 1.5 (Identity & Tru
 ## License
 
 This project is for building personal, decentralized infrastructure. See Reticulum's license for the networking stack.
+
+---
+
+## Container
+
+PCOS includes a bundled Alpine Linux container for running commands in an isolated environment.
+
+### Interactive Shell
+
+Connect to the container shell:
+
+```bash
+nc -U ~/.local/run/pcos/container.sock
+```
+
+### Socket API
+
+The messaging socket provides control and remote execution:
+
+| Path | `~/.local/run/pcos/messaging.sock` |
+|------|-------------------------------------|
+| Protocol | JSON over Unix socket |
+| Permissions | 0600 (owner only) |
+
+Example commands:
+
+```bash
+# Get peer list
+echo '{"cmd": "peers"}' | nc -U ~/.local/run/pcos/messaging.sock
+
+# Execute remote command
+echo '{"cmd": "execute", "peer": "pop-osmark", "command": "echo hello"}' | nc -U ~/.local/run/pcos/messaging.sock
+
+# Get status
+echo '{"cmd": "status"}' | nc -U ~/.local/run/pcos/messaging.sock
+```

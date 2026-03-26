@@ -7,7 +7,8 @@ They are committed to the repository so no installation is needed.
 
 | File | What | Version | Built for | Build step |
 |------|------|---------|-----------|-----------|
-| `i2pd` | I2P daemon (internet tunneling) | 2.59.0 | x86_64 Linux (static) | S7 in GOALS.md |
+| `i2pd` | I2P daemon (internet tunneling) | 2.59.0 | x86_64 Linux (static) | See BUILD.md |
+| `../container/rootfs` | Alpine Linux (busybox + musl) | 3.20 | x86_64 Linux | Bundled in repo (see src/container/rootfs/) |
 
 ## i2pd
 
@@ -61,3 +62,26 @@ cp i2pd ../../bin/i2pd
 git add ../../bin/i2pd src/vendor/i2pd-src
 git commit -m "vendor: update i2pd to <new-version>"
 ```
+
+---
+
+## ../container/rootfs
+
+The Alpine Linux rootfs is bundled in the repository at `src/container/rootfs/`.
+This provides the "Guest OS" layer - a minimal Alpine environment with busybox.
+
+### Contents
+- busybox (ls, cat, sh, etc. - all in one binary)
+- musl libc (lightweight alternative to glibc)
+- apk (Alpine package manager)
+- Basic filesystem structure
+
+### No build step needed
+The rootfs is committed directly to the repo as a pre-built tarball.
+When PCOS first runs, it copies this to `~/.local/share/pcos/container/rootfs/`.
+
+### Why Alpine?
+- Tiny (8MB rootfs vs 100MB+ for full distro)
+- busybox means single binary for all CLI tools
+- musl is smaller and faster than glibc
+- apk is a simple, fast package manager
