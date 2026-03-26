@@ -296,19 +296,42 @@ class ContainerManager:
                     preexec_fn=os.setsid
                 )
                 
-                # Relay data between socket and PTY
+                # Relay data between socket and PTY with idle timeout
+                idle_count = 0
                 while self._shell_running and proc.poll() is None:
                     r, _, _ = select.select([client, master], [], [], 0.1)
+                    
+                    if not r:
+                        idle_count += 1
+                        if idle_count > 30:  # 3 seconds idle = disconnect
+                            break
+                        continue
+                    
+                    idle_count = 0  # Reset on activity
+                    
                     if client in r:
-                        data = client.recv(1024)
-                        if data:
-                            os.write(master, data)
+                        try:
+                            data = client.recv(1024)
+                            if data:
+                                os.write(master, data)
+                            else:
+                                break  # Client disconnected
+                        except:
+                            break
                     if master in r:
-                        data = os.read(master, 1024)
-                        if data:
-                            client.send(data)
+                        try:
+                            data = os.read(master, 1024)
+                            if data:
+                                client.send(data)
+                        except:
+                            break
                 
-                proc.terminate()
+                # Cleanup
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=1)
+                except:
+                    pass
                 client.close()
                 os.close(master)
                 os.close(slave)
