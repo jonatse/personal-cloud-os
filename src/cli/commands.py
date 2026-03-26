@@ -1019,13 +1019,15 @@ class CommandHandler:
         
         parser = argparse.ArgumentParser(prog='remote', add_help=False)
         parser.add_argument('peer', nargs='?', default=None)
-        parser.add_argument('command', nargs='?', default=None)
+        parser.add_argument('command', nargs=argparse.REMAINDER, default=None)
         parser.add_argument('-t', '--timeout', type=float, default=30.0)
         
         try:
             parsed = parser.parse_args(args)
         except SystemExit:
             return True
+        
+        parsed.command = ' '.join(parsed.command) if isinstance(parsed.command, list) else parsed.command
         
         if not parsed.peer or not parsed.command:
             print("\n" + "─" * 50)
