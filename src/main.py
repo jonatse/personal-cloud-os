@@ -115,7 +115,8 @@ class PersonalCloudOS:
         self.socket_api = SocketAPI(
             reticulum_service=None,  # Will be set after services start
             sync_service=None,
-            event_bus=event_bus
+            event_bus=event_bus,
+            app=self  # Reference to main app for accessing services
         )
         
         # Setup signal handlers
@@ -184,6 +185,7 @@ class PersonalCloudOS:
             # Set the services after they've been created
             self.socket_api.reticulum_service = self.reticulum_service
             self.socket_api.sync_service = self.sync_engine
+            self.socket_api.app = self
             await self.socket_api.start()
         except Exception as e:
             logger.error(f"Failed to start socket API: {e}")

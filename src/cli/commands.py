@@ -41,6 +41,31 @@ class CommandHandler:
             from core.identity import IdentityManager
             self._identity_manager = IdentityManager()
         return self._identity_manager
+
+    def _socket_query(self, cmd: str, params: dict = None) -> dict:
+        """Send a command to the socket API and return the response."""
+        import socket
+        import json
+        
+        socket_path = os.path.expanduser('~/.local/run/pcos/messaging.sock')
+        if not os.path.exists(socket_path):
+            return {'error': 'socket_not_available'}
+        
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(30)
+            sock.connect(socket_path)
+            request = {'cmd': cmd}
+            if params:
+                request.update(params)
+            sock.send((json.dumps(request) + '\n').encode())
+            response = sock.recv(8192)
+            sock.close()
+            return json.loads(response.decode()) if response else {'error': 'empty_response'}
+        except socket.timeout:
+            return {'error': 'timeout'}
+        except Exception as e:
+            return {'error': str(e)}
     
     def get_commands(self) -> Dict[str, str]:
         """Get command list with descriptions."""
@@ -434,12 +459,11 @@ class CommandHandler:
         return True
     
     def cmd_stop(self, args) -> bool:
-        """Stop a service."""
+        """Stop a service via socket API."""
         if not args:
             print("Usage: stop <peers|sync|container|i2p|all>")
             return True
         
-        import asyncio
         service = args[0]
         valid_services = ['peers', 'sync', 'container', 'i2p', 'all']
         
@@ -447,38 +471,21 @@ class CommandHandler:
             print(f"Unknown service: {service}. Valid: {valid_services}")
             return True
         
-        async def do_stop():
-            services_to_stop = []
-            if service == 'all':
-                services_to_stop = ['peers', 'sync', 'container', 'i2p']
-            else:
-                services_to_stop = [service]
-            
-            for svc in services_to_stop:
-                if svc == 'peers':
-                    await self.app.reticulum_service.stop()
-                elif svc == 'sync':
-                    await self.app.sync_engine.stop()
-                elif svc == 'container':
-                    await self.app.container_manager.stop()
-                elif svc == 'i2p':
-                    await self.app.i2p_manager.stop()
+        resp = self._socket_query('service_stop', {'service': service})
         
-        try:
-            asyncio.run(do_stop())
+        if 'error' in resp:
+            print(f"✗ Failed to stop {service}: {resp['error']}")
+        else:
             print(f"✓ {service} stopped")
-        except Exception as e:
-            print(f"✗ Failed to stop {service}: {e}")
         
         return True
     
     def cmd_restart(self, args) -> bool:
-        """Restart a service."""
+        """Restart a service via socket API."""
         if not args:
             print("Usage: restart <peers|sync|container|i2p|all>")
             return True
         
-        import asyncio
         service = args[0]
         valid_services = ['peers', 'sync', 'container', 'i2p', 'all']
         
@@ -486,32 +493,12 @@ class CommandHandler:
             print(f"Unknown service: {service}. Valid: {valid_services}")
             return True
         
-        async def do_restart():
-            services_to_restart = []
-            if service == 'all':
-                services_to_restart = ['peers', 'sync', 'container', 'i2p']
-            else:
-                services_to_restart = [service]
-            
-            for svc in services_to_restart:
-                if svc == 'peers':
-                    await self.app.reticulum_service.stop()
-                    await self.app.reticulum_service.start()
-                elif svc == 'sync':
-                    await self.app.sync_engine.stop()
-                    await self.app.sync_engine.start()
-                elif svc == 'container':
-                    await self.app.container_manager.stop()
-                    await self.app.container_manager.start()
-                elif svc == 'i2p':
-                    await self.app.i2p_manager.stop()
-                    await self.app.i2p_manager.start()
+        resp = self._socket_query('service_restart', {'service': service})
         
-        try:
-            asyncio.run(do_restart())
+        if 'error' in resp:
+            print(f"✗ Failed to restart {service}: {resp['error']}")
+        else:
             print(f"✓ {service} restarted")
-        except Exception as e:
-            print(f"✗ Failed to restart {service}: {e}")
         
         return True
     
@@ -553,50 +540,35 @@ class CommandHandler:
         import os
 
         logger = logging.getLogger(__name__)
-        id_mgr = self._get_identity_manager()
-
         subcommand = args[0] if args else 'show'
 
         if subcommand in ('show', ''):
-            try:
-                id_mgr.load_or_create_identity()
-                identity_hash = id_mgr.get_identity_hash()
-                identity_path = id_mgr.get_identity_path()
-                trust_level = id_mgr.get_trust_level(identity_hash)
-
+            # Use socket API
+            resp = self._socket_query('identity')
+            if 'error' in resp:
+                print(f"Error: {resp['error']}")
+            else:
                 print("\n" + "─" * 50)
                 print("  IDENTITY")
                 print("─" * 50)
-                print(f"  Hash: {identity_hash[:32]}...")
-                print(f"  Path: {identity_path}")
-                print(f"  Trust Level: {trust_level}")
+                print(f"  Hash: {resp.get('hash', 'unknown')}")
+                print(f"  Path: {resp.get('path', 'unknown')}")
+                print(f"  Trust Level: {resp.get('trust_level', 'unknown')}")
                 print("─" * 50 + "\n")
-                return True
-            except Exception as e:
-                print(f"Error showing identity: {e}")
-                logger.error(f"Error showing identity: {e}")
-                return True
+            return True
 
         if subcommand == 'create':
-            try:
-                if os.path.exists(id_mgr.get_identity_path()):
-                    print("WARNING: Identity already exists!")
-                    print("Creating a new identity will replace the existing one.")
-                    confirm = input("Are you sure? (yes/no): ")
-                    if confirm.lower() != 'yes':
-                        print("Cancelled.")
-                        return True
-
-                id_mgr.load_or_create_identity()
-                identity_hash = id_mgr.get_identity_hash()
+            # Use socket API
+            resp = self._socket_query('identity', {'subcommand': 'create'})
+            if 'error' in resp:
+                print(f"Error: {resp['error']}")
+                if 'identity_exists' in resp.get('error', ''):
+                    print(resp.get('message', ''))
+            else:
                 print(f"Identity created successfully!")
-                print(f"Hash: {identity_hash[:32]}...")
-                logger.info(f"Created new identity: {identity_hash[:16]}...")
-                return True
-            except Exception as e:
-                print(f"Error creating identity: {e}")
-                logger.error(f"Error creating identity: {e}")
-                return True
+                print(f"Hash: {resp.get('hash', 'unknown')}")
+                logger.info(f"Created new identity")
+            return True
 
         if subcommand == 'export':
             try:
