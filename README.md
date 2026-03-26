@@ -14,6 +14,8 @@ A self-contained, offline-first personal cloud that syncs files across your devi
 | Persistent device identity | Working |
 | Curses CLI (split-screen) | Working |
 | Identity-based access control | Working |
+| Remote command execution (via Unix socket) | Working |
+| Socket API for container control | Working |
 
 ---
 
@@ -53,6 +55,32 @@ APPLICATION LAYER (PCOS):
 ### Unknown
 - Cannot access your files
 - Can route through your mesh (helps the network)
+
+---
+
+## Socket API (Container Control)
+
+PCOS exposes a Unix socket for control and diagnostics:
+
+| Path | `~/.local/run/pcos/messaging.sock` |
+|------|-------------------------------------|
+| Protocol | JSON over Unix socket |
+| Permissions | 0600 (owner only) |
+
+### Available Commands
+
+```bash
+# Get peer list
+echo '{"cmd": "peers"}' | nc -U ~/.local/run/pcos/messaging.sock
+
+# Execute remote command
+echo '{"cmd": "execute", "peer": "pop-osmark", "command": "echo hello"}' | nc -U ~/.local/run/pcos/messaging.sock
+
+# Get status
+echo '{"cmd": "status"}' | nc -U ~/.local/run/pcos/messaging.sock
+```
+
+This allows the container (Alpine Linux) to control PCOS and execute commands on remote peers.
 
 ---
 

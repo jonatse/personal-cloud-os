@@ -1,6 +1,6 @@
 # Personal Cloud OS — Design Specification
 
-Version: 1.0 (updated 2026-03-19 to reflect actual implementation)
+Version: 1.0 (updated 2026-03-26 to reflect actual implementation)
 
 This document describes what the system IS and HOW it works.
 GOALS.md tracks what is being built next.
@@ -16,6 +16,27 @@ A self-contained, offline-first personal operating environment that:
 - Creates a shared, encrypted mesh between those devices
 - Eventually: shares compute resources, files, and a unified Linux environment across all devices
 - Requires no cloud accounts, no central servers, no port-forwarding
+
+---
+
+## Current Status (as of 2026-03-26)
+
+### Working Features
+- RNS networking (LAN + I2P)
+- Peer discovery via announces
+- File sync between devices
+- Identity-based access control
+- Remote command execution via Unix socket API
+
+### Socket API
+- Path: `~/.local/run/pcos/messaging.sock`
+- Protocol: JSON over Unix socket
+- Commands: `peers`, `execute`, `status`
+- Security: File permissions 0600 (owner only)
+
+### Known Limitation
+- CLI remote command has curses issues in non-interactive mode
+- Socket API provides alternative access path
 
 ---
 
@@ -656,9 +677,11 @@ Implementations:
 The PCOS container (Alpine Linux) should be able to access messaging:
 
 **Option A: Unix Socket**
-- PCOS exposes a Unix socket at `/run/pcos/messaging.sock`
-- Container app connects via `connect("/run/pcos/messaging.sock")`
+- PCOS exposes a Unix socket at `~/.local/run/pcos/messaging.sock`
+- Container app connects via `connect("~/.local/run/pcos/messaging.sock")`
 - Simple protocol over Unix socket (JSON messages)
+- Socket uses file permissions (0600) for access control — only the owner user can connect
+- More secure than network-based APIs since access is controlled by filesystem permissions
 
 **Option B: Shared Volume**
 - Mount shared volume at `/mnt/pcos`
@@ -676,7 +699,7 @@ All options keep the container isolated from direct RNS access while enabling me
 
 ```
 P3.x
-├── Add command handler /cmd/execute
+├── Add command handler /cmd/execute [DONE]
 │   - Execute scripts, restart services
 │   - Returns JSON result
 ├── Add status handler /status

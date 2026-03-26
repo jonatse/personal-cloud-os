@@ -1,18 +1,20 @@
 # Personal Cloud OS — Goals & Priority Tracking
 
-Last updated: 2026-03-25
+Last updated: 2026-03-26
 
 This file tracks what is being worked on, what is done, and what comes next.
 It is the sprint board. SPEC.md is the design document.
 
 ---
 
-## Current State (as of 2026-03-25)
+## Current State (as of 2026-03-26)
 
 The system boots, joins the LAN via Reticulum, discovers peers, syncs files,
 shows everything in a live curses CLI, and includes an Identity & Trust System
 for access control. Two devices (debian desktop + pop-osmark laptop) are 
-discovering each other and syncing files successfully!
+discovering each other and syncing files successfully! Unix socket API working
+for container control, remote command execution working via socket at 
+~/.local/run/pcos/messaging.sock.
 
 ---
 
@@ -167,12 +169,21 @@ Friend:
 - [x] P3.1 SyncEngine scans ~/Sync ✅ WORKING
 - [x] P3.2 FileInfo dataclass ✅ WORKING
 - [x] P3.3 JSON wire protocol ✅ WORKING
-- [ ] P3.4 Fix P2P link establishment
+- [x] P3.4 Fix P2P link establishment ✅ WORKING
 - [ ] P3.5 Fix chunk reassembly (B11)
 - [ ] P3.6 Conflict resolution
 - [ ] P3.7 Handle DELETE_FILE
 - [ ] P3.8 Binary/base64 encoding
 - [ ] P3.9 Progress indicator
+
+---
+
+## Priority 3.x — Socket API & Remote Commands
+
+- [x] P3.x.1 Unix socket server at ~/.local/run/pcos/messaging.sock
+- [x] P3.x.2 JSON protocol: peers, execute, status commands
+- [x] P3.x.3 Remote command execution via RNS link
+- [x] P3.x.4 Socket permissions 0600 (owner only)
 
 ---
 
@@ -195,3 +206,4 @@ Friend:
 | 2026-03-19 | I2P for internet | Decentralized |
 | 2026-03-19 | Vendor bundling | Self-contained |
 | 2026-03-20 | Identity 1.5 = RNS native + PCOS access control | Simplified |
+| 2026-03-26 | Unix socket instead of CLI for remote commands | Better security, container-friendly |
