@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 RESOURCE_SYNC = "/sync"
 RESOURCE_COMPUTE = "/compute"
 RESOURCE_HOME = "/home"
+RESOURCE_COMMAND = "/cmd"
 
 TRUST_PERSONAL = "personal"
 TRUST_CIRCLE = "circle"
@@ -51,6 +52,8 @@ class AccessControl:
             return self._check_compute_access(trust_level)
         elif resource.startswith(RESOURCE_HOME):
             return self._check_home_access(trust_level)
+        elif resource.startswith(RESOURCE_COMMAND):
+            return self._check_command_access(trust_level)
 
         logger.warning(f"v{__version__} Unknown resource type: {resource}")
         return False
@@ -82,6 +85,15 @@ class AccessControl:
     def _check_home_access(self, trust_level: str) -> bool:
         """
         Check access for /home/* resources.
+        - personal: full access
+        - circle: no access
+        - unknown: no access
+        """
+        return trust_level == TRUST_PERSONAL
+
+    def _check_command_access(self, trust_level: str) -> bool:
+        """
+        Check access for /cmd/* resources.
         - personal: full access
         - circle: no access
         - unknown: no access

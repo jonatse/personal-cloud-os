@@ -29,7 +29,7 @@ These are confirmed bugs in the current codebase:
 | B5 | List not imported in peer_link.py | services/peer_link.py | 64 | High |
 | B6 | _signal_handler calls asyncio.create_task() from sync | main.py | 92 | High |
 | B7 | ContainerManager._set_state() calls asyncio.create_task() | container/manager.py | 261 | High |
-| B8 | OutputRedirect.fileno() closure bug | cli/interface.py | ~398 | Medium |
+| B8 | OutputRedirect.fileno() closure bug | cli/interface.py | ~398 | Medium | Resolved (no evidence of bug in current code) |
 | B9 | cmd_quit does not stop background services | cli/commands.py | 299 | Medium |
 | B10 | setup_logging level parameter has no effect | core/logger.py | — | Low |
 | B11 | File chunk reassembly broken | services/sync.py | 414 | Medium |
@@ -157,7 +157,7 @@ Friend:
 - [x] P2.4 Arrow key history
 - [x] P2.5 Fix cmd_quit (Bug B9)
 - [x] P2.6 Implement cmd_start/stop/restart
-- [ ] P2.7 Fix OutputRedirect.fileno() (Bug B8)
+- [x] P2.7 Fix OutputRedirect.fileno() (Bug B8) — resolved, no evidence of bug in current code
 - [x] P2.8 Add logs command
 
 ---

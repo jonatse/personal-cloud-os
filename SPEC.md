@@ -505,6 +505,205 @@ This is different from GitHub-hosted deployment — the network heals itself.
 
 ---
 
+## Messaging Architecture
+
+*Added 2026-03-25 — planning document for future implementation*
+
+### What RNS Already Provides
+
+Reticulum provides built-in messaging primitives that PCOS can leverage directly:
+
+| Feature | RNS API | Use Case |
+|---------|---------|----------|
+| Request/Response | `destination.register_request_handler(path, callback)` + `link.request(path, data)` | RPC-style commands, status queries |
+| Link Callbacks | `link.set_established_callback()`, `link.set_closed_callback()`, `link.set_remote_identified_callback()` | Connection state, auth events |
+| Chunked/Streamed Data | `RNS.Resource` | Large payloads, file transfers, streaming |
+| Broadcast | `destination.send_broadcast(data)` | Announcements to all peers |
+| Group Destinations | `RNS.Destination(type=GROUP)` | Multi-peer "circles" for chat |
+
+All of these are already available in the existing `reticulum_peer.py` code — no new RNS features needed.
+
+### Existing Foundation to Build On
+
+The following PCOS components provide the foundation for messaging:
+
+- **DeviceManager** — Maintains device inventory with hardware and network info
+- **AccessControl** (conceptual) — Trust levels: personal/circle/unknown
+- **ReticulumPeerService** — Already has request handlers:
+  - `/sync/index` — returns file list
+  - `/sync/file` — returns file data
+- **IdentityManager** (conceptual) — Identity management via RNS
+
+### Proposed Message Types
+
+#### Command Messages
+
+Run remote scripts, restart services, trigger sync:
+
+```python
+link.request("/cmd", {
+    "action": "restart_service",
+    "service": "container",
+    "args": {}
+})
+```
+
+Handler registers at `/cmd/execute`, returns JSON result.
+
+#### Status Messages
+
+Share device inventory, health metrics, capabilities:
+
+```python
+link.request("/status", {
+    "what": "inventory"
+})
+```
+
+Handler registers at `/status`, returns device info. Can extend for periodic broadcast.
+
+#### Chat Messages
+
+Simple peer-to-peer text:
+
+```python
+link.request("/chat", {
+    "message": "Hello from my laptop",
+    "timestamp": 1234567890
+})
+```
+
+Or use GROUP destination for multi-peer conversations.
+
+### Chat Architecture (Future PCOS App)
+
+#### Design Goals
+
+- **Extensible** — Bridge to other protocols later (Matrix, IRC, etc.)
+- **Simple first** — Direct peer-to-peer, then GROUP destinations
+- **Offline-first** — Messages queue and deliver when peers appear
+
+#### Evolution Plan
+
+```
+P3.x (Simple)      →  P4.x (Group)      →  P5.x (Bridge)
+   │                      │                    │
+   ▼                      ▼                    ▼
+Direct P2P             GROUP                 External
+messages            destinations           protocol bridge
+   │                      │                    │
+   └──────────────────────┴────────┬──────────┘
+                                  │
+                            Bridge Interface
+                            (abstract class)
+```
+
+#### Phase 1: Direct Peer-to-Peer
+
+```
+User A                        User B
+   │                             │
+   │  link.request("/chat", {   │
+   │    "message": "hi",        │
+   │    "from": "device_A"     │
+   │  })                        │
+   │ ──────────────────────────► │
+   │                             │
+   │  handler responds:         │
+   │  { "ack": true }           │
+   │ ◄───────────────────────── │
+```
+
+No persistence yet — messages only delivered to online peers.
+
+#### Phase 2: GROUP Destinations for Circles
+
+Create a RNS GROUP destination per "circle" (friends/family):
+
+```
+Circle "Friends" destination:
+  personalcloudos.circles.<circle_id>
+
+Members announce to this destination
+Messages broadcast to all members
+Offline members receive on next connect
+```
+
+#### Phase 3: Bridge Interface
+
+```python
+class MessageBridge(ABC):
+    @abstractmethod
+    async def send(self, message: ChatMessage) -> bool:
+        pass
+    
+    @abstractmethod
+    async def receive(self) -> AsyncIterator[ChatMessage]:
+        pass
+    
+    @abstractmethod
+    async def get_members(self) -> List[str]:
+        pass
+```
+
+Implementations:
+- `RNSChatBridge` — native PCOS messaging
+- `MatrixBridge` — bridge to Matrix network
+- `IRCBridge` — bridge to IRC
+
+### CLI Access from Container
+
+The PCOS container (Alpine Linux) should be able to access messaging:
+
+**Option A: Unix Socket**
+- PCOS exposes a Unix socket at `/run/pcos/messaging.sock`
+- Container app connects via `connect("/run/pcos/messaging.sock")`
+- Simple protocol over Unix socket (JSON messages)
+
+**Option B: Shared Volume**
+- Mount shared volume at `/mnt/pcos`
+- PCOS writes socket or named pipe there
+- Container app reads/writes to communicate
+
+**Option C: Import PCOS Modules**
+- Mount PCOS source at `/mnt/pcos_src` inside container
+- Container app can `import pcos` directly
+- Works if container has same Python environment
+
+All options keep the container isolated from direct RNS access while enabling messaging.
+
+### Implementation Plan
+
+```
+P3.x
+├── Add command handler /cmd/execute
+│   - Execute scripts, restart services
+│   - Returns JSON result
+├── Add status handler /status
+│   - Share device inventory on request
+│   - Can broadcast periodically
+└── Basic peer-to-peer chat
+    - /chat request handler
+    - No persistence yet
+
+P4.x
+├── GROUP destinations for circles
+│   - Create circle management
+│   - Broadcast to group members
+└── Message persistence
+    - Store messages locally
+    - Deliver to offline peers on connect
+
+P5.x
+├── Bridge interface (abstract)
+├── Matrix bridge implementation
+└── IRC bridge implementation
+```
+
+Each phase builds on the previous. The foundation (RNS request/response, GROUP destinations) is already available — we just need to wire it up.
+
+---
+
 ## Future Phases
 
 ### Phase 2 — Encrypted P2P Messaging

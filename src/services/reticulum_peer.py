@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import RNS
 
-from core.access_control import RESOURCE_SYNC
+from core.access_control import RESOURCE_SYNC, RESOURCE_COMMAND
 from core.version import __version__
 
 logger = logging.getLogger(__name__)
@@ -33,6 +33,7 @@ APP_NAME         = "personalcloudos"
 PEER_ASPECT      = "peers"
 PATH_INDEX       = "/sync/index"    # handler: return our file index
 PATH_FILE        = "/sync/file"     # handler: return file bytes by path
+PATH_CMD_EXECUTE = "/cmd/execute"
 
 
 @dataclass
@@ -158,8 +159,13 @@ class ReticulumPeerService:
             response_generator = self._handle_file_request,
             allow              = RNS.Destination.ALLOW_ALL,
         )
+        self._destination.register_request_handler(
+            path               = PATH_CMD_EXECUTE,
+            response_generator = self._handle_command_request,
+            allow              = RNS.Destination.ALLOW_ALL,
+        )
 
-        logger.info("Request handlers registered: /sync/index, /sync/file")
+        logger.info("Request handlers registered: /sync/index, /sync/file, /cmd/execute")
 
         # Announce handler so we discover other PCOS devices
         class _AnnounceHandler:
@@ -225,6 +231,58 @@ class ReticulumPeerService:
         except Exception as exc:
             logger.error(f"v{__version__} File handler error: {exc}", exc_info=True)
         return None
+
+    def _handle_command_request(self, path, data, req_id,
+                               link_id, remote_identity, requested_at):
+        """Execute remote commands (self-healing)."""
+        try:
+            remote_hash = None
+            if remote_identity and hasattr(remote_identity, "hash"):
+                remote_hash = remote_identity.hash.hex()
+
+            if self._access_control and remote_hash:
+                if not self._access_control.check_access(remote_hash, RESOURCE_COMMAND):
+                    logger.warning(f"v{__version__} Command request denied: remote={remote_hash[:16]}...")
+                    return json.dumps({"error": "access_denied", "reason": "insufficient_trust"}).encode()
+
+            # Parse command from data
+            cmd_data = {}
+            if data:
+                try:
+                    cmd_data = json.loads(data) if isinstance(data, (bytes, str)) else {}
+                except json.JSONDecodeError:
+                    pass
+
+            command = cmd_data.get("cmd", "")
+            if not command:
+                return json.dumps({"error": "missing_cmd"}).encode()
+
+            logger.info(f"v{__version__} Executing remote command: {command}")
+
+            # Execute the command using subprocess
+            import subprocess
+            result = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            response = {
+                "cmd": command,
+                "exit_code": result.returncode,
+                "stdout": result.stdout[:4096],  # Limit output size
+                "stderr": result.stderr[:4096],
+            }
+            return json.dumps(response).encode()
+
+        except subprocess.TimeoutExpired:
+            logger.error(f"v{__version__} Command timed out: {command}")
+            return json.dumps({"error": "timeout"}).encode()
+        except Exception as exc:
+            logger.error(f"v{__version__} Command handler error: {exc}", exc_info=True)
+            return json.dumps({"error": "internal_error", "message": str(exc)[:256]}).encode()
 
     # ── Announce / peer discovery ──────────────────────────────────────
 
@@ -335,6 +393,89 @@ class ReticulumPeerService:
         except Exception as exc:
             logger.error(f"create_link error: {exc}", exc_info=True)
             return None
+
+    # ── Remote command execution ─────────────────────────────────────────
+
+    async def execute_command(self, peer_id: str, command: str, timeout: float = 30.0) -> Optional[dict]:
+        """
+        Execute a command on a remote peer via RNS link.
+        
+        Args:
+            peer_id: Hex string of peer destination hash
+            command: Command string to execute
+            timeout: Request timeout in seconds
+            
+        Returns:
+            dict with keys: cmd, exit_code, stdout, stderr
+            None if request fails
+        """
+        import asyncio
+        import json
+        
+        link = self.create_link(peer_id)
+        if not link:
+            logger.error(f"execute_command: failed to create link to {peer_id[:16]}...")
+            return None
+        
+        # Wait for link to become active
+        for _ in range(20):  # 10 seconds max wait
+            await asyncio.sleep(0.5)
+            if link.status == RNS.Link.ACTIVE:
+                break
+            elif link.status in (RNS.Link.CLOSED, RNS.Link.STALE):
+                logger.error(f"execute_command: link closed before command")
+                return None
+        
+        if link.status != RNS.Link.ACTIVE:
+            logger.error(f"execute_command: link not active after 10s")
+            try:
+                link.teardown()
+            except:
+                pass
+            return None
+        
+        # Send the command request
+        future = asyncio.Future()
+        
+        def _on_response(response):
+            if not future.done():
+                try:
+                    result = json.loads(response) if response else {}
+                    future.set_result(result)
+                except Exception as exc:
+                    future.set_exception(exc)
+        
+        def _on_failed():
+            if not future.done():
+                future.set_exception(Exception("Command request failed"))
+        
+        request_data = json.dumps({"cmd": command}).encode()
+        
+        receipt = link.request(
+            PATH_CMD_EXECUTE,
+            data=request_data,
+            response_callback=_on_response,
+            failed_callback=_on_failed,
+            timeout=timeout,
+        )
+        
+        if receipt is False:
+            logger.error(f"execute_command: link.request returned False")
+            return None
+        
+        try:
+            return await asyncio.wait_for(future, timeout=timeout + 5)
+        except asyncio.TimeoutError:
+            logger.warning(f"execute_command: command timed out after {timeout}s")
+            return None
+        except Exception as exc:
+            logger.error(f"execute_command: {exc}")
+            return None
+        finally:
+            try:
+                link.teardown()
+            except:
+                pass
 
     # ── Queries ────────────────────────────────────────────────────────
 
