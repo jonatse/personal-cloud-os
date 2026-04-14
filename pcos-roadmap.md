@@ -27,29 +27,37 @@
 ### MariaDB on Thelio
 - [ ] Get MariaDB to start on Thelio (permission/config issue)
 - [ ] Replicate `pcos` database to Thelio
+- [ ] Test connectivity from Pangolin to Thelio MariaDB
 
 ### Data Sync
 - [ ] Build sync mechanism between Pangolin and Thelio
 - [ ] Bidirectional or master/slave replication
+- [ ] Decide: which machine is primary?
+
+### Passwords & Security
+- [ ] Create passwords/encryption table
+- [ ] Key management for encryption
+- [ ] Integration with .env files
 
 ---
 
 ## Not Started 📋
 
 ### Database-as-OS Expansion
-- [ ] Passwords/encryption table
 - [ ] Skills storage in DB
 - [ ] Configurations in DB
 - [ ] Cron jobs in DB
+- [ ] Full "Database as OS" - all state in MariaDB
 
 ### Identity System
 - [ ] Multiple identities support
 - [ ] Personality/persona persistence
 - [ ] Cross-platform identity binding
 
-### Hardware
+### Hardware & Inference
 - [ ] vLLM/llama.cpp on Thelio for local inference
 - [ ] Route requests: local GPU → external API → cloud
+- [ ] Make Thelio the primary, laptop as thin client
 
 ### Reticulum Integration
 - [ ] Identity management in DB
