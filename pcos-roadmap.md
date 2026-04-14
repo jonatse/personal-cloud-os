@@ -21,6 +21,7 @@
 - [x] PARAs categories table (Projects, Areas, Resources, Archives)
 - [x] PARA items table with link to GTD projects
 - [x] gtd_para_mapping table showing how they relate
+- [x] **All 26 roadmap items now in TODO inbox**
 
 ### Knowledge Tracking
 - [x] knowledge_assertions - track facts learned
