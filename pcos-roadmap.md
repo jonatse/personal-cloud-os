@@ -26,6 +26,8 @@
 - [x] knowledge_assertions - track facts learned
 - [x] contradictions - detect conflicts between assertions
 - [x] redundancies - find similar assertions
+- [x] **26 roadmap items added to gtd_items table**
+- [x] Projects linked to para_items
 
 ---
 
