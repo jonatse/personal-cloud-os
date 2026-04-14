@@ -59,6 +59,48 @@
       "hardware": {},
       "network": {},
       "last_updated": "2026-03-19T00:00:00Z"
+    },
+    "pop-osmark": {
+      "name": "pop-osmark",
+      "hostname": "pop-osmark",
+      "device_id": "19efa90fc6d97c09",
+      "mac": "525400843bdf",
+      "is_local": true,
+      "ssh": null,
+      "project_path": "/home/jonathansoberg/Projects/personal-cloud-os",
+      "identity_path": "/home/jonathansoberg/.reticulum/storage/identities/pcos_843bdf",
+      "hardware": {
+        "cpu_cores": 16,
+        "platform": "x86_64",
+        "os": "Linux",
+        "os_version": "#202511241048~1764704751~22.04~b24b425 SMP PREEMPT_DYNAMIC Tue D",
+        "ram_total_gb": 30.6,
+        "gpus": []
+      },
+      "network": {
+        "ip_addresses": [
+          "100.91.246.114"
+        ],
+        "hostname": "pop-osmark",
+        "interfaces": {
+          "lo": [
+            "127.0.0.1"
+          ],
+          "virbr0": [
+            "192.168.122.1"
+          ],
+          "wlp2s0": [
+            "192.168.1.82"
+          ],
+          "docker0": [
+            "172.17.0.1"
+          ],
+          "tailscale0": [
+            "100.91.246.114"
+          ]
+        }
+      },
+      "last_updated": "2026-03-26T09:07:42.327485+00:00"
     }
   }
 }

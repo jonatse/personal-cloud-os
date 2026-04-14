@@ -29,6 +29,7 @@ class IdentityManager:
         self._identity_path = identity_path or IDENTITY_PATH_DEFAULT
         self._identity: Optional[RNS.Identity] = None
         self._circles_dir = CIRCLES_BASE_PATH
+        self._contact_registry = None
         logger.info(f"v{__version__} IdentityManager initialized")
 
     def get_identity_path(self) -> str:
@@ -183,6 +184,19 @@ class IdentityManager:
             with open(members_file, "w") as f:
                 json.dump(members, f)
             logger.info(f"v{__version__} Added identity to circle {name}: {identity_hash[:16]}...")
+
+            # Also create a contact entry if registry is available
+            if self._contact_registry is not None:
+                try:
+                    existing = self._contact_registry.get_contact_by_identity(identity_hash)
+                    if existing is None:
+                        self._contact_registry.add_contact(
+                            identity_hash=identity_hash,
+                            display_name=f"Contact ({identity_hash[:8]})",
+                        )
+                        logger.info(f"Auto-created contact for circle member: {identity_hash[:16]}...")
+                except Exception as e:
+                    logger.warning(f"Failed to auto-create contact for circle member: {e}")
         
         return True
 
@@ -240,3 +254,40 @@ class IdentityManager:
                     return "circle"
         
         return "unknown"
+
+    def set_contact_registry(self, contact_registry):
+        """Set the contact registry for identity-contact integration."""
+        self._contact_registry = contact_registry
+        logger.info("Contact registry linked to IdentityManager")
+
+    def get_contact_for_identity(self, identity_hash) -> Optional[dict]:
+        """
+        Returns contact info for an identity hash if available.
+        
+        Args:
+            identity_hash: Hex string of identity hash
+            
+        Returns:
+            dict or None: Contact info if found, None otherwise
+        """
+        if self._contact_registry is not None:
+            return self._contact_registry.get_contact_by_identity(identity_hash)
+        return None
+
+    def get_identity_context(self, identity_hash) -> dict:
+        """
+        Returns full context for an identity: trust level + contact info.
+        
+        Args:
+            identity_hash: Hex string of identity hash
+            
+        Returns:
+            dict: {"trust_level": str, "contact": dict|None, "is_known": bool}
+        """
+        trust_level = self.get_trust_level(identity_hash)
+        contact = self.get_contact_for_identity(identity_hash)
+        return {
+            "trust_level": trust_level,
+            "contact": contact,
+            "is_known": trust_level != "unknown" or contact is not None
+        }

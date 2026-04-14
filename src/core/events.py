@@ -120,3 +120,13 @@ class Events:
     APP_CLOSED = "app.closed"
     
     STATUS_UPDATE = "system.status"
+
+    # Contact events
+    CONTACT_ADDED = "contact.added"
+    CONTACT_UPDATED = "contact.updated"
+    CONTACT_REMOVED = "contact.removed"
+    CONTACT_MERGED = "contact.merged"
+    CONTACT_IMPORTED = "contact.imported"
+    CONTACT_DEVICE_REGISTERED = "contact.device_registered"
+    CONTACT_DEVICE_REMOVED = "contact.device_removed"
+    CONTACT_REF_ADDED = "contact.ref_added"

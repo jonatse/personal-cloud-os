@@ -30,6 +30,7 @@ class CommandHandler:
             'quit': self.cmd_quit,
             'identity': self.cmd_identity,
             'circle': self.cmd_circle,
+            'contact': self.cmd_contact,
             'link': self.cmd_link,
             'logs': self.cmd_logs,
             'remote': self.cmd_remote,
@@ -86,6 +87,7 @@ class CommandHandler:
             'quit': 'Exit and stop the application',
             'identity': 'Manage identity (create, show, export, import, show-qr)',
             'circle': 'Manage trust circles (create, list, add, remove)',
+            'contact': 'Manage contacts (list, add, show, update, remove, search, ref, merge, export, import)',
             'link': 'Show link status and verify encryption',
             'logs': 'Show application logs (optional: --follow, --level LEVEL, lines)',
         }
@@ -846,6 +848,303 @@ class CommandHandler:
 
         print(f"Unknown subcommand: {subcommand}")
         print("Usage: circle <list|create|show|add|remove>")
+        return True
+
+    def cmd_contact(self, args) -> bool:
+        """Manage contacts."""
+        import logging
+        import json
+
+        logger = logging.getLogger(__name__)
+
+        try:
+            from core.contact_registry import ContactRegistry
+            from core.identity import IdentityManager
+            from core.device_manager import DeviceManager
+        except ImportError as e:
+            print(f"Error importing contact modules: {e}")
+            return True
+
+        subcommand = args[0] if args else 'list'
+
+        # Initialize contact registry
+        try:
+            id_mgr = IdentityManager()
+            id_mgr.load_or_create_identity()
+            dev_mgr = DeviceManager()
+            contact_reg = ContactRegistry(
+                identity_manager=id_mgr,
+                device_manager=dev_mgr,
+            )
+        except Exception as e:
+            print(f"Error initializing contact registry: {e}")
+            logger.error(f"Contact registry init error: {e}")
+            return True
+
+        if subcommand == 'list':
+            filter_level = args[1] if len(args) > 1 else None
+            contacts = contact_reg.list_contacts(trust_level=filter_level)
+            print("\n" + "─" * 60)
+            print("  CONTACTS")
+            print("─" * 60)
+            if contacts:
+                for c in contacts:
+                    name = c.get('display_name', 'Unknown')
+                    trust = c.get('trust_level', 'unknown')
+                    devices = len(c.get('devices', []))
+                    device_str = f"{devices} device{'s' if devices != 1 else ''}"
+                    print(f"  • {name}")
+                    print(f"    Trust: {trust} | {device_str} | ID: {c['id'][:12]}...")
+            else:
+                print("  No contacts found.")
+                print("  Use 'contact add <identity_hash> <name>' to add one.")
+            print("─" * 60 + "\n")
+            return True
+
+        if subcommand == 'add':
+            if len(args) < 3:
+                print("Usage: contact add <identity_hash> <display_name> [phone_number]")
+                return True
+            identity_hash = args[1]
+            display_name = args[2]
+            phone_number = args[3] if len(args) > 3 else None
+            try:
+                contact = contact_reg.add_contact(
+                    identity_hash=identity_hash,
+                    display_name=display_name,
+                    phone_number=phone_number,
+                )
+                print(f"Contact '{display_name}' added successfully!")
+                print(f"  ID: {contact['id']}")
+                print(f"  Identity: {identity_hash[:32]}...")
+                print(f"  Trust level: {contact['trust_level']}")
+                return True
+            except Exception as e:
+                print(f"Error adding contact: {e}")
+                logger.error(f"Error adding contact: {e}")
+                return True
+
+        if subcommand == 'show':
+            if len(args) < 2:
+                print("Usage: contact show <contact_id|identity_hash>")
+                return True
+            query = args[1]
+            # Try as contact ID first, then as identity hash
+            contact = contact_reg.get_contact(query)
+            if contact is None:
+                contact = contact_reg.get_contact_by_identity(query)
+            if contact is None:
+                print(f"Contact not found: {query}")
+                return True
+
+            print("\n" + "─" * 60)
+            print(f"  CONTACT: {contact.get('display_name', 'Unknown')}")
+            print("─" * 60)
+            print(f"  ID:            {contact['id']}")
+            print(f"  Identity:      {contact['identity_hash'][:48]}...")
+            print(f"  Trust level:   {contact['trust_level']}")
+            if contact.get('phone_number'):
+                print(f"  Phone:         {contact['phone_number']}")
+            if contact.get('notes'):
+                print(f"  Notes:         {contact['notes']}")
+            print(f"  Created:       {contact['created_at']}")
+            print(f"  Updated:       {contact['updated_at']}")
+
+            devices = contact.get('devices', [])
+            print(f"  Devices:       {len(devices)}")
+            for dev in devices:
+                print(f"    - {dev.get('hostname', 'unknown')} ({dev.get('device_id', '?')[:12]}...)")
+                print(f"      Last seen: {dev.get('last_seen', 'never')}")
+
+            refs = contact.get('refs', {})
+            if refs:
+                print(f"  Cross-references:")
+                for ref_type, ref_ids in refs.items():
+                    print(f"    {ref_type}: {len(ref_ids)} reference(s)")
+            print("─" * 60 + "\n")
+            return True
+
+        if subcommand == 'update':
+            if len(args) < 3:
+                print("Usage: contact update <contact_id> <field=value> [field=value ...]")
+                return True
+            contact_id = args[1]
+            contact = contact_reg.get_contact(contact_id)
+            if contact is None:
+                print(f"Contact not found: {contact_id}")
+                return True
+
+            updates = {}
+            for arg in args[2:]:
+                if '=' not in arg:
+                    print(f"Invalid field format: {arg} (use field=value)")
+                    return True
+                key, value = arg.split('=', 1)
+                updates[key] = value
+
+            try:
+                updated = contact_reg.update_contact(contact_id, **updates)
+                print(f"Contact '{updated['display_name']}' updated.")
+                for key, value in updates.items():
+                    print(f"  {key}: {value}")
+                return True
+            except Exception as e:
+                print(f"Error updating contact: {e}")
+                logger.error(f"Error updating contact: {e}")
+                return True
+
+        if subcommand == 'remove':
+            if len(args) < 2:
+                print("Usage: contact remove <contact_id>")
+                return True
+            contact_id = args[1]
+            contact = contact_reg.get_contact(contact_id)
+            if contact is None:
+                print(f"Contact not found: {contact_id}")
+                return True
+
+            try:
+                contact_reg.remove_contact(contact_id)
+                print(f"Contact '{contact.get('display_name', contact_id)}' removed.")
+                return True
+            except Exception as e:
+                print(f"Error removing contact: {e}")
+                logger.error(f"Error removing contact: {e}")
+                return True
+
+        if subcommand == 'search':
+            if len(args) < 2:
+                print("Usage: contact search <query>")
+                return True
+            query = ' '.join(args[1:])
+            results = contact_reg.search_contacts(query)
+            print("\n" + "─" * 60)
+            print(f"  SEARCH RESULTS: '{query}'")
+            print("─" * 60)
+            if results:
+                for c in results:
+                    name = c.get('display_name', 'Unknown')
+                    trust = c.get('trust_level', 'unknown')
+                    print(f"  • {name} ({trust})")
+                    if c.get('phone_number'):
+                        print(f"    Phone: {c['phone_number']}")
+                    if c.get('notes'):
+                        print(f"    Notes: {c['notes'][:60]}...")
+            else:
+                print("  No contacts found matching query.")
+            print("─" * 60 + "\n")
+            return True
+
+        if subcommand == 'ref':
+            ref_action = args[1] if len(args) > 1 else 'list'
+            if ref_action == 'add':
+                if len(args) < 5:
+                    print("Usage: contact ref add <contact_id> <ref_type> <ref_id>")
+                    print("  ref_type: location, transaction, message, journal_entry, etc.")
+                    return True
+                contact_id = args[2]
+                ref_type = args[3]
+                ref_id = args[4]
+                try:
+                    contact_reg.add_cross_ref(contact_id, ref_type, ref_id)
+                    print(f"Cross-reference added: {contact_id} -> {ref_type}:{ref_id}")
+                    return True
+                except Exception as e:
+                    print(f"Error adding cross-reference: {e}")
+                    return True
+            elif ref_action == 'list':
+                if len(args) < 3:
+                    print("Usage: contact ref list <contact_id> [ref_type]")
+                    return True
+                contact_id = args[2]
+                ref_type = args[3] if len(args) > 3 else None
+                contact = contact_reg.get_contact(contact_id)
+                if contact is None:
+                    print(f"Contact not found: {contact_id}")
+                    return True
+                refs = contact_reg.get_cross_refs(contact_id, ref_type)
+                print("\n" + "─" * 60)
+                print(f"  CROSS-REFERENCES: {contact.get('display_name', contact_id)}")
+                print("─" * 60)
+                if ref_type:
+                    print(f"  {ref_type}: {refs}")
+                else:
+                    for rt, rids in refs.items():
+                        print(f"  {rt}: {rids}")
+                print("─" * 60 + "\n")
+                return True
+            else:
+                print(f"Unknown ref action: {ref_action}")
+                print("Usage: contact ref <add|list>")
+                return True
+
+        if subcommand == 'merge':
+            if len(args) < 3:
+                print("Usage: contact merge <source_id> <target_id>")
+                return True
+            source_id = args[1]
+            target_id = args[2]
+            source = contact_reg.get_contact(source_id)
+            target = contact_reg.get_contact(target_id)
+            if source is None:
+                print(f"Source contact not found: {source_id}")
+                return True
+            if target is None:
+                print(f"Target contact not found: {target_id}")
+                return True
+
+            try:
+                merged = contact_reg.merge_contact(source_id, target_id)
+                print(f"Contacts merged into '{merged['display_name']}'.")
+                return True
+            except Exception as e:
+                print(f"Error merging contacts: {e}")
+                logger.error(f"Error merging contacts: {e}")
+                return True
+
+        if subcommand == 'export':
+            if len(args) < 2:
+                print("Usage: contact export <contact_id>")
+                return True
+            contact_id = args[1]
+            try:
+                exported = contact_reg.export_contact(contact_id)
+                print(json.dumps(exported, indent=2))
+                return True
+            except Exception as e:
+                print(f"Error exporting contact: {e}")
+                return True
+
+        if subcommand == 'import':
+            if len(args) < 2:
+                print("Usage: contact import <json_string>")
+                return True
+            json_string = ' '.join(args[1:])
+            try:
+                contact = contact_reg.import_contact(json_string)
+                print(f"Contact '{contact['display_name']}' imported.")
+                print(f"  ID: {contact['id']}")
+                return True
+            except Exception as e:
+                print(f"Error importing contact: {e}")
+                logger.error(f"Error importing contact: {e}")
+                return True
+
+        if subcommand == 'stats':
+            stats = contact_reg.get_stats()
+            print("\n" + "─" * 60)
+            print("  CONTACT STATISTICS")
+            print("─" * 60)
+            print(f"  Total contacts:     {stats['total_contacts']}")
+            for level, count in stats['by_trust_level'].items():
+                print(f"    {level:12} {count}")
+            print(f"  Total devices:      {stats['total_devices']}")
+            print(f"  Contacts with refs: {stats['contacts_with_refs']}")
+            print("─" * 60 + "\n")
+            return True
+
+        print(f"Unknown subcommand: {subcommand}")
+        print("Usage: contact <list|add|show|update|remove|search|ref|merge|export|import|stats>")
         return True
 
     def cmd_link(self, args) -> bool:
