@@ -15,10 +15,12 @@
 - [x] Verbatim message capture (not just last 4)
 - [x] User/assistant differentiation
 
-### GTD System
+### GTD + PARA System
 - [x] GTD categories table (inbox, project, next_action, waiting, someday, reference, done)
 - [x] GTD items table with context, due_date, project_id
-- [x] Categories pre-populated
+- [x] PARAs categories table (Projects, Areas, Resources, Archives)
+- [x] PARA items table with link to GTD projects
+- [x] gtd_para_mapping table showing how they relate
 
 ### Knowledge Tracking
 - [x] knowledge_assertions - track facts learned
