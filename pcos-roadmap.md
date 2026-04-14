@@ -15,10 +15,15 @@
 - [x] Verbatim message capture (not just last 4)
 - [x] User/assistant differentiation
 
-### Session Persistence
-- [x] _load_session_context() on startup
-- [x] _save_session_context() on quit
-- [x] Works across CLI and WhatsApp
+### GTD System
+- [x] GTD categories table (inbox, project, next_action, waiting, someday, reference, done)
+- [x] GTD items table with context, due_date, project_id
+- [x] Categories pre-populated
+
+### Knowledge Tracking
+- [x] knowledge_assertions - track facts learned
+- [x] contradictions - detect conflicts between assertions
+- [x] redundancies - find similar assertions
 
 ---
 
